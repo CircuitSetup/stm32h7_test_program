@@ -9,6 +9,8 @@ extern "C" {
 
 void network_ethernet_boot_start(void);
 void network_ethernet_poll(void);
+void network_ethernet_suspend(void);
+void network_ethernet_resume(void);
 
 void network_ethernet_test_phy(board_test_result_t *result);
 void network_ethernet_test_link(board_test_result_t *result);

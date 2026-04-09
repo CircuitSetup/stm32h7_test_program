@@ -5,6 +5,7 @@
 #define LWIP_ARCH_CC_H
 
 #include <stdint.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 

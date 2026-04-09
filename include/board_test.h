@@ -20,10 +20,15 @@ void board_test_run_named(const char *test_name);
 void board_test_run_ade_index(uint8_t index);
 void board_test_run_analog_fixture(void);
 void board_test_print_summary(void);
+void board_test_print_confidence_info(void);
 void board_test_list_tests(void);
 void board_test_dump_board_map(void);
 void board_test_dump_gpio_policy(void);
 void board_test_dump_registers_ade(uint8_t index);
+void board_test_stress_eth(uint32_t count);
+void board_test_stress_wifi(uint32_t count);
+void board_test_stress_bt(uint32_t count);
+void board_test_stress_radio(uint32_t count);
 void board_test_set_verbose(uint8_t verbose);
 uint8_t board_test_get_verbose(void);
 
@@ -50,7 +55,9 @@ void test_power_internal_rails(board_test_result_t *result);
 void test_power_rail_inference(board_test_result_t *result);
 void test_ethernet_phy(board_test_result_t *result);
 void test_ethernet_link(board_test_result_t *result);
+void test_wifi_connect(board_test_result_t *result);
 void test_wifi_sdio_presence(board_test_result_t *result);
+void test_bt_ble_link(board_test_result_t *result);
 void test_bt_uart_hci(board_test_result_t *result);
 void test_ade_scan_all(board_test_result_t *result);
 void test_ade_single_device(uint8_t index, board_test_result_t *result);
@@ -67,6 +74,7 @@ void test_usb_fs_device(board_test_result_t *result);
 
 void test_ethernet_print_info(void);
 void test_wifi_print_info(void);
+void test_bt_print_info(void);
 void test_ade_dump_registers(uint8_t index);
 void test_usb_irq_handler(void);
 

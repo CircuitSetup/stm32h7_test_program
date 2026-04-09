@@ -2,17 +2,18 @@
 
 #include "board_test.h"
 #include "main.h"
+#include "network_stack.h"
 #include "test_uart.h"
 
 #include "lwip/dhcp.h"
-#include "lwip/init.h"
 #include "lwip/ip4_addr.h"
 #include "lwip/netif.h"
+#include "lwip/netifapi.h"
 #include "lwip/pbuf.h"
 #include "lwip/prot/ethernet.h"
 #include "lwip/prot/icmp.h"
 #include "lwip/prot/ip4.h"
-#include "lwip/timeouts.h"
+#include "lwip/tcpip.h"
 #include "netif/etharp.h"
 #include "netif/ethernet.h"
 
@@ -92,6 +93,7 @@ typedef struct network_eth_rx_fragment {
 typedef struct {
     uint8_t boot_started;
     uint8_t init_ok;
+    uint8_t suspended;
     uint8_t phy_valid;
     uint8_t link_up;
     uint8_t mac_started;
@@ -134,10 +136,6 @@ static uint8_t s_eth_tx_buffer[NETWORK_ETH_TX_BUFFER_SIZE] __attribute__((aligne
 static uint8_t s_eth_rx_buffer_state[NETWORK_ETH_RX_BUFFER_COUNT];
 static network_eth_rx_fragment_t s_eth_rx_fragments[NETWORK_ETH_RX_BUFFER_COUNT];
 static uint8_t s_eth_mac_addr[6];
-
-void sys_init(void)
-{
-}
 
 u32_t sys_now(void)
 {
@@ -230,7 +228,7 @@ static void network_eth_clear_netif_addresses(void)
     ip4_addr_t zero;
 
     network_eth_zero_ip(&zero);
-    netif_set_addr(&s_netif, &zero, &zero, &zero);
+    (void)netifapi_netif_set_addr(&s_netif, &zero, &zero, &zero);
 }
 
 static void network_eth_set_detail(const char *detail)
@@ -526,14 +524,14 @@ static void network_eth_stop_mac(void)
         s_eth_ctx.mac_started = 0U;
     }
 
-    netif_set_down(&s_netif);
-    netif_set_link_down(&s_netif);
+    (void)netifapi_netif_set_down(&s_netif);
+    (void)netifapi_netif_set_link_down(&s_netif);
 }
 
 static void network_eth_reset_qualification(void)
 {
     if (s_eth_ctx.dhcp_started != 0U) {
-        dhcp_release_and_stop(&s_netif);
+        (void)netifapi_dhcp_release_and_stop(&s_netif);
         s_eth_ctx.dhcp_started = 0U;
     }
 
@@ -562,7 +560,7 @@ static void network_eth_begin_dhcp_session(bool force_restart)
     s_eth_ctx.dhcp_deadline_ms = HAL_GetTick() + NETWORK_ETH_DHCP_TIMEOUT_MS;
 
     if (force_restart && (s_eth_ctx.dhcp_started != 0U)) {
-        dhcp_release_and_stop(&s_netif);
+        (void)netifapi_dhcp_release_and_stop(&s_netif);
         s_eth_ctx.dhcp_started = 0U;
         network_eth_clear_netif_addresses();
     }
@@ -573,7 +571,7 @@ static void network_eth_begin_dhcp_session(bool force_restart)
         return;
     }
 
-    err = dhcp_start(&s_netif);
+    err = netifapi_dhcp_start(&s_netif);
     if (err != ERR_OK) {
         (void)snprintf(s_eth_ctx.detail,
                        sizeof(s_eth_ctx.detail),
@@ -1026,18 +1024,23 @@ void network_ethernet_boot_start(void)
     s_eth_ctx.phy_addr = NETWORK_ETH_PHY_ADDR;
     s_eth_ctx.boot_started = 1U;
 
+    if (!network_stack_is_ready()) {
+        s_eth_ctx.init_ok = 0U;
+        network_eth_set_detail("lwIP tcpip thread is not ready.");
+        return;
+    }
+
     network_eth_zero_ip(&zero);
-    lwip_init();
-    if (netif_add(&s_netif, &zero, &zero, &zero, NULL, network_eth_netif_init, ethernet_input) == NULL) {
+    if (netifapi_netif_add(&s_netif, &zero, &zero, &zero, NULL, network_eth_netif_init, tcpip_input) != ERR_OK) {
         s_eth_ctx.init_ok = 0U;
         s_eth_ctx.state = NETWORK_ETH_STATE_PHY_FAIL;
         network_eth_set_detail("netif_add failed.");
         return;
     }
 
-    netif_set_default(&s_netif);
-    netif_set_link_down(&s_netif);
-    netif_set_down(&s_netif);
+    (void)netifapi_netif_set_default(&s_netif);
+    (void)netifapi_netif_set_link_down(&s_netif);
+    (void)netifapi_netif_set_down(&s_netif);
     network_ethernet_poll();
 }
 
@@ -1046,6 +1049,10 @@ void network_ethernet_poll(void)
     uint32_t now;
 
     if ((s_eth_ctx.boot_started == 0U) || (s_eth_ctx.init_ok == 0U)) {
+        return;
+    }
+
+    if (s_eth_ctx.suspended != 0U) {
         return;
     }
 
@@ -1079,8 +1086,8 @@ void network_ethernet_poll(void)
             }
 
             s_eth_ctx.mac_started = 1U;
-            netif_set_up(&s_netif);
-            netif_set_link_up(&s_netif);
+            (void)netifapi_netif_set_up(&s_netif);
+            (void)netifapi_netif_set_link_up(&s_netif);
         }
 
         if ((s_eth_ctx.dhcp_started == 0U) && (s_eth_ctx.dhcp_bound == 0U)) {
@@ -1093,8 +1100,27 @@ void network_ethernet_poll(void)
         (void)HAL_ETH_ReleaseTxPacket(&s_eth_handle);
     }
 
-    sys_check_timeouts();
     network_eth_update_state_machine();
+}
+
+void network_ethernet_suspend(void)
+{
+    if (s_eth_ctx.boot_started == 0U) {
+        return;
+    }
+
+    network_eth_stop_mac();
+    network_eth_reset_qualification();
+    s_eth_ctx.suspended = 1U;
+    s_eth_ctx.state = NETWORK_ETH_STATE_NO_LINK;
+    network_eth_set_detail("Ethernet suspended by network manager.");
+}
+
+void network_ethernet_resume(void)
+{
+    network_ethernet_boot_start();
+    s_eth_ctx.suspended = 0U;
+    network_ethernet_poll();
 }
 
 void network_ethernet_test_phy(board_test_result_t *result)
@@ -1248,6 +1274,7 @@ void network_ethernet_print_info(void)
     test_uart_printf("  state=%s detail=%s\r\n",
                      network_eth_state_name(s_eth_ctx.state),
                      (s_eth_ctx.detail[0] != '\0') ? s_eth_ctx.detail : "n/a");
+    test_uart_printf("  suspended=%u\r\n", s_eth_ctx.suspended);
     test_uart_printf("  expected_phy_addr=%u actual_phy_addr=%u\r\n",
                      NETWORK_ETH_PHY_ADDR,
                      (unsigned int)(s_eth_ctx.phycr & NETWORK_ETH_PHYCR_PHYADDR_MASK));

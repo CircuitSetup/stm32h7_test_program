@@ -1,7 +1,12 @@
 #include "main.h"
 
 #include "board_test.h"
+#include "ap6256_bt_runtime.h"
+#include "cmsis_os2.h"
+#include "ap6256_wifi_runtime.h"
 #include "network_ethernet.h"
+#include "network_manager.h"
+#include "network_stack.h"
 #include "test_console.h"
 #include "test_uart.h"
 #include <string.h>
@@ -12,6 +17,49 @@ ADC_HandleTypeDef hadc3;
 CRC_HandleTypeDef hcrc;
 
 volatile uint8_t g_clock_fallback_hsi = 0U;
+
+static void app_console_task(void *argument);
+static void app_ethernet_task(void *argument);
+static void app_network_manager_task(void *argument);
+static void app_wifi_task(void *argument);
+static void app_bt_task(void *argument);
+static void app_init_task(void *argument);
+
+static const osThreadAttr_t s_console_task_attr = {
+    .name = "console_task",
+    .priority = osPriorityLow,
+    .stack_size = 2048U
+};
+
+static const osThreadAttr_t s_ethernet_task_attr = {
+    .name = "ethernet_task",
+    .priority = osPriorityNormal,
+    .stack_size = 3072U
+};
+
+static const osThreadAttr_t s_network_manager_task_attr = {
+    .name = "net_mgr_task",
+    .priority = osPriorityBelowNormal,
+    .stack_size = 1024U
+};
+
+static const osThreadAttr_t s_wifi_task_attr = {
+    .name = "wifi_task",
+    .priority = osPriorityBelowNormal,
+    .stack_size = 2048U
+};
+
+static const osThreadAttr_t s_bt_task_attr = {
+    .name = "bt_task",
+    .priority = osPriorityBelowNormal,
+    .stack_size = 2048U
+};
+
+static const osThreadAttr_t s_init_task_attr = {
+    .name = "init_task",
+    .priority = osPriorityAboveNormal,
+    .stack_size = 4096U
+};
 
 static HAL_StatusTypeDef MX_ADC3_Clock_Config(void)
 {
@@ -371,17 +419,65 @@ void MX_CRC_Init(void)
     }
 }
 
-int main(void)
+static void app_console_task(void *argument)
 {
-    HAL_Init();
-    SystemClock_Config();
+    (void)argument;
 
-    MX_GPIO_Init();
-    MX_USART3_UART_Init();
-    test_uart_init();
-    MX_SPI4_Init();
-    MX_ADC3_Init();
-    MX_CRC_Init();
+    for (;;) {
+        test_console_poll();
+        osDelay(10U);
+    }
+}
+
+static void app_ethernet_task(void *argument)
+{
+    (void)argument;
+
+    network_ethernet_boot_start();
+    for (;;) {
+        network_ethernet_poll();
+        osDelay(5U);
+    }
+}
+
+static void app_network_manager_task(void *argument)
+{
+    (void)argument;
+
+    for (;;) {
+        osDelay(100U);
+    }
+}
+
+static void app_wifi_task(void *argument)
+{
+    (void)argument;
+
+    for (;;) {
+        ap6256_wifi_runtime_poll();
+        osDelay(10U);
+    }
+}
+
+static void app_bt_task(void *argument)
+{
+    (void)argument;
+
+    for (;;) {
+        ap6256_bt_runtime_poll();
+        osDelay(1U);
+    }
+}
+
+static void app_init_task(void *argument)
+{
+    (void)argument;
+
+    network_manager_init();
+    if (!network_stack_init()) {
+        test_uart_write_str("lwIP tcpip_thread failed to start.\r\n");
+        Error_Handler();
+    }
 
     network_ethernet_boot_start();
 
@@ -395,9 +491,32 @@ int main(void)
 #endif
     test_console_show_prompt();
 
+    (void)osThreadNew(app_network_manager_task, NULL, &s_network_manager_task_attr);
+    (void)osThreadNew(app_ethernet_task, NULL, &s_ethernet_task_attr);
+    (void)osThreadNew(app_wifi_task, NULL, &s_wifi_task_attr);
+    (void)osThreadNew(app_bt_task, NULL, &s_bt_task_attr);
+    (void)osThreadNew(app_console_task, NULL, &s_console_task_attr);
+
+    osThreadExit();
+}
+
+int main(void)
+{
+    HAL_Init();
+    SystemClock_Config();
+
+    MX_GPIO_Init();
+    MX_USART3_UART_Init();
+    test_uart_init();
+    MX_SPI4_Init();
+    MX_ADC3_Init();
+    MX_CRC_Init();
+
+    osKernelInitialize();
+    (void)osThreadNew(app_init_task, NULL, &s_init_task_attr);
+    (void)osKernelStart();
+
     while (1) {
-        network_ethernet_poll();
-        test_console_poll();
     }
 }
 

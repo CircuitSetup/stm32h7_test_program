@@ -1,40 +1,29 @@
-/*
- * Minimal NO_SYS port hooks for lwIP on this project.
- *
- * The macro renames keep the public lwIP names available to later code
- * while letting this header provide a tiny built-in implementation.
- */
-#ifndef LWIP_ARCH_SYS_ARCH_H
-#define LWIP_ARCH_SYS_ARCH_H
+#ifndef __SYS_ARCH_H__
+#define __SYS_ARCH_H__
 
-#include <stdint.h>
+#include "lwip/opt.h"
+
+#if (NO_SYS != 0)
+#error "NO_SYS needs to be set to 0 for the RTOS lwIP port"
+#endif
+
+#include "cmsis_os2.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-extern uint32_t HAL_GetTick(void);
+#define SYS_MBOX_NULL ((osMessageQueueId_t)0)
+#define SYS_SEM_NULL  ((osSemaphoreId_t)0)
 
-#define sys_init     lwip_sys_init
-#define sys_now      lwip_sys_now
-#define sys_jiffies  lwip_sys_jiffies
-
-static inline void lwip_sys_init(void)
-{
-}
-
-static inline uint32_t lwip_sys_now(void)
-{
-    return HAL_GetTick();
-}
-
-static inline uint32_t lwip_sys_jiffies(void)
-{
-    return HAL_GetTick();
-}
+typedef osSemaphoreId_t    sys_sem_t;
+typedef osMutexId_t        sys_mutex_t;
+typedef osMessageQueueId_t sys_mbox_t;
+typedef osThreadId_t       sys_thread_t;
+typedef uint32_t           sys_prot_t;
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* LWIP_ARCH_SYS_ARCH_H */
+#endif /* __SYS_ARCH_H__ */

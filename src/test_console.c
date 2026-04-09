@@ -2,6 +2,7 @@
 
 #include "board_test.h"
 #include "main.h"
+#include "network_manager.h"
 #include "test_uart.h"
 
 #include <ctype.h>
@@ -44,6 +45,13 @@ static void print_help(void)
     test_uart_write_str("  run usb\r\n");
     test_uart_write_str("  eth_info\r\n");
     test_uart_write_str("  wifi_info\r\n");
+    test_uart_write_str("  bt_info\r\n");
+    test_uart_write_str("  radio_info\r\n");
+    test_uart_write_str("  confidence_info\r\n");
+    test_uart_write_str("  stress eth <count>\r\n");
+    test_uart_write_str("  stress wifi <count>\r\n");
+    test_uart_write_str("  stress bt <count>\r\n");
+    test_uart_write_str("  stress radio <count>\r\n");
     test_uart_write_str("  dump_registers ade <index>\r\n");
     test_uart_write_str("  set verbose 0|1\r\n");
     test_uart_write_str("  reboot\r\n\r\n");
@@ -166,6 +174,56 @@ static void handle_command(char *line)
 
     if (str_ieq(cmd, "wifi_info")) {
         test_wifi_print_info();
+        return;
+    }
+
+    if (str_ieq(cmd, "bt_info")) {
+        test_bt_print_info();
+        return;
+    }
+
+    if (str_ieq(cmd, "radio_info")) {
+        network_manager_print_info();
+        return;
+    }
+
+    if (str_ieq(cmd, "confidence_info")) {
+        board_test_print_confidence_info();
+        return;
+    }
+
+    if (str_ieq(cmd, "stress")) {
+        unsigned long count;
+
+        if ((arg1 == NULL) || (arg2 == NULL)) {
+            test_uart_write_str("Usage: stress <eth|wifi|bt|radio> <count>\r\n");
+            return;
+        }
+
+        count = strtoul(arg2, NULL, 0);
+        if (count == 0UL) {
+            test_uart_write_str("Stress count must be greater than zero.\r\n");
+            return;
+        }
+
+        if (str_ieq(arg1, "eth")) {
+            board_test_stress_eth((uint32_t)count);
+            return;
+        }
+        if (str_ieq(arg1, "wifi")) {
+            board_test_stress_wifi((uint32_t)count);
+            return;
+        }
+        if (str_ieq(arg1, "bt")) {
+            board_test_stress_bt((uint32_t)count);
+            return;
+        }
+        if (str_ieq(arg1, "radio")) {
+            board_test_stress_radio((uint32_t)count);
+            return;
+        }
+
+        test_uart_write_str("Usage: stress <eth|wifi|bt|radio> <count>\r\n");
         return;
     }
 

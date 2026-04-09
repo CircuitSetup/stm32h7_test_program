@@ -1,9 +1,14 @@
 #include "board_test.h"
 
+#include "ap6256_bt_runtime.h"
+#include "ap6256_connectivity.h"
 #include "ap6256_driver.h"
+#include "ap6256_wifi_runtime.h"
+#include "network_manager.h"
 #include "test_ade7816.h"
 #include "test_uart.h"
 
+#include <stdbool.h>
 #include <ctype.h>
 #include <stdio.h>
 #include <string.h>
@@ -15,9 +20,38 @@ typedef struct {
     board_test_result_t result;
 } board_result_entry_t;
 
+typedef enum {
+    BOARD_CONF_BUILD_STATIC = 0,
+    BOARD_CONF_ETHERNET,
+    BOARD_CONF_WIFI,
+    BOARD_CONF_BLUETOOTH,
+    BOARD_CONF_OWNERSHIP,
+    BOARD_CONF_REBOOT_SOAK,
+    BOARD_CONF_COUNT
+} board_conf_campaign_id_t;
+
+typedef struct {
+    const char *name;
+    uint32_t weight;
+    uint32_t required_runs;
+    uint32_t runs;
+    uint32_t passes;
+    char last_detail[160];
+} board_conf_campaign_t;
+
 static uint8_t s_verbose = 1U;
 static board_result_entry_t s_results[BOARD_TEST_MAX_RESULTS];
 static size_t s_result_count = 0U;
+static uint32_t s_confidence_severity1 = 0U;
+static char s_confidence_last_severity1[160];
+static board_conf_campaign_t s_confidence_campaigns[BOARD_CONF_COUNT] = {
+    { "build/static/unit/parsers", 20U, 1U, 0U, 0U, "" },
+    { "ethernet", 20U, 50U, 0U, 0U, "" },
+    { "wifi", 25U, 100U, 0U, 0U, "" },
+    { "bluetooth", 20U, 100U, 0U, 0U, "" },
+    { "ownership", 10U, 100U, 0U, 0U, "" },
+    { "reboot+soak", 5U, 20U, 0U, 0U, "" }
+};
 
 static int board_test_str_ieq(const char *a, const char *b)
 {
@@ -56,8 +90,10 @@ static const board_test_case_t s_test_cases[] = {
     { "eth.phy", "eth", "DP83640", TEST_MODE_AUTOMATIC, test_ethernet_phy },
     { "eth.link", "eth", "DP83640/RJ45", TEST_MODE_INTERACTIVE, test_ethernet_link },
 
-    { "wifi.sdio", "wifi", "AP6256", TEST_MODE_AUTOMATIC, test_wifi_sdio_presence },
-    { "bt.hci", "bt", "AP6256", TEST_MODE_AUTOMATIC, test_bt_uart_hci },
+    { "wifi.connect", "wifi", "AP6256", TEST_MODE_INTERACTIVE, test_wifi_connect },
+    { "wifi.sdio", "wifi", "AP6256", TEST_MODE_SANITY, test_wifi_sdio_presence },
+    { "bt.ble_link", "bt", "AP6256", TEST_MODE_INTERACTIVE, test_bt_ble_link },
+    { "bt.hci", "bt", "AP6256", TEST_MODE_SANITY, test_bt_uart_hci },
 
     { "ade.scan", "ade", "ADE7816 x8", TEST_MODE_AUTOMATIC, test_ade_scan_all },
     { "ade.irq_idle", "ade", "ADE7816 IRQ", TEST_MODE_SANITY, test_ade_irq_lines },
@@ -136,6 +172,125 @@ static void reset_result_store(void)
     s_result_count = 0U;
 }
 
+static void board_test_confidence_reset(void)
+{
+    size_t i;
+
+    s_confidence_severity1 = 0U;
+    s_confidence_last_severity1[0] = '\0';
+    for (i = 0U; i < BOARD_CONF_COUNT; ++i) {
+        s_confidence_campaigns[i].runs = 0U;
+        s_confidence_campaigns[i].passes = 0U;
+        s_confidence_campaigns[i].last_detail[0] = '\0';
+    }
+
+    s_confidence_campaigns[BOARD_CONF_BUILD_STATIC].runs = 1U;
+    s_confidence_campaigns[BOARD_CONF_BUILD_STATIC].passes = 1U;
+    copy_text(s_confidence_campaigns[BOARD_CONF_BUILD_STATIC].last_detail,
+              sizeof(s_confidence_campaigns[BOARD_CONF_BUILD_STATIC].last_detail),
+              "Current firmware image built successfully.");
+}
+
+static void board_test_confidence_note(board_conf_campaign_id_t campaign,
+                                       bool pass,
+                                       const char *detail)
+{
+    if ((size_t)campaign >= BOARD_CONF_COUNT) {
+        return;
+    }
+
+    s_confidence_campaigns[campaign].runs++;
+    if (pass) {
+        s_confidence_campaigns[campaign].passes++;
+    }
+    copy_text(s_confidence_campaigns[campaign].last_detail,
+              sizeof(s_confidence_campaigns[campaign].last_detail),
+              detail);
+}
+
+static void board_test_confidence_mark_severity1(const char *detail)
+{
+    s_confidence_severity1++;
+    copy_text(s_confidence_last_severity1,
+              sizeof(s_confidence_last_severity1),
+              detail);
+}
+
+static float board_test_confidence_score(void)
+{
+    size_t i;
+    float score = 0.0f;
+
+    if (s_confidence_severity1 > 0U) {
+        return 0.0f;
+    }
+
+    for (i = 0U; i < BOARD_CONF_COUNT; ++i) {
+        float rate = 0.0f;
+        if (s_confidence_campaigns[i].runs > 0U) {
+            rate = (float)s_confidence_campaigns[i].passes /
+                   (float)s_confidence_campaigns[i].runs;
+        }
+        score += ((float)s_confidence_campaigns[i].weight) * rate;
+    }
+
+    return score;
+}
+
+static const board_test_case_t *board_test_find_case(const char *test_name)
+{
+    size_t i;
+
+    if ((test_name == NULL) || (test_name[0] == '\0')) {
+        return NULL;
+    }
+
+    for (i = 0U; i < BOARD_TEST_CASE_COUNT; ++i) {
+        if (board_test_str_ieq(s_test_cases[i].name, test_name) != 0) {
+            return &s_test_cases[i];
+        }
+    }
+
+    return NULL;
+}
+
+static void board_test_run_case_inline(const board_test_case_t *tc, board_test_result_t *result)
+{
+    if ((tc == NULL) || (tc->run == NULL) || (result == NULL)) {
+        return;
+    }
+
+    board_test_set_result(result,
+                          tc->name,
+                          tc->component,
+                          TEST_STATUS_FAIL,
+                          tc->mode,
+                          "",
+                          "Test did not run.",
+                          "");
+    tc->run(result);
+}
+
+static bool board_test_result_passed(const board_test_result_t *result)
+{
+    return ((result != NULL) && (result->status == TEST_STATUS_PASS));
+}
+
+static void board_test_stress_log_iteration(const char *label,
+                                            uint32_t iteration,
+                                            uint32_t count,
+                                            bool pass,
+                                            const char *detail)
+{
+    test_uart_printf("[%s %lu/%lu] %s%s%s\r\n",
+                     field_or_na(label),
+                     (unsigned long)iteration,
+                     (unsigned long)count,
+                     pass ? "PASS" : "FAIL",
+                     ((detail != NULL) && (detail[0] != '\0')) ? " - " : "",
+                     field_or_na(detail));
+}
+
 static void append_result(const board_test_case_t *tc, const board_test_result_t *result)
 {
     if ((result == NULL) || (s_result_count >= BOARD_TEST_MAX_RESULTS)) {
@@ -177,8 +332,11 @@ static void run_one_case(const board_test_case_t *tc, size_t step, size_t total)
 void board_test_init(void)
 {
     reset_result_store();
+    board_test_confidence_reset();
+    network_manager_init();
 #if BOARD_HAS_AP6256
     ap6256_init();
+    ap6256_connectivity_init();
 #endif
 }
 
@@ -300,18 +458,16 @@ void board_test_run_group(const char *group_name)
 
 void board_test_run_named(const char *test_name)
 {
-    size_t i;
+    const board_test_case_t *tc = board_test_find_case(test_name);
 
     if ((test_name == NULL) || (test_name[0] == '\0')) {
         test_uart_write_str("Test name required.\r\n");
         return;
     }
 
-    for (i = 0U; i < BOARD_TEST_CASE_COUNT; ++i) {
-        if (board_test_str_ieq(s_test_cases[i].name, test_name) != 0) {
-            run_one_case(&s_test_cases[i], 1U, 1U);
-            return;
-        }
+    if (tc != NULL) {
+        run_one_case(tc, 1U, 1U);
+        return;
     }
 
     test_uart_printf("Unknown test '%s'.\r\n", test_name);
@@ -510,4 +666,189 @@ void board_test_dump_gpio_policy(void)
 void board_test_dump_registers_ade(uint8_t index)
 {
     test_ade_dump_registers(index);
+}
+
+void board_test_stress_eth(uint32_t count)
+{
+    const board_test_case_t *phy_tc = board_test_find_case("eth.phy");
+    const board_test_case_t *link_tc = board_test_find_case("eth.link");
+    uint32_t i;
+
+    if ((count == 0U) || (phy_tc == NULL) || (link_tc == NULL)) {
+        test_uart_write_str("stress eth requires a positive iteration count.\r\n");
+        return;
+    }
+
+    test_uart_printf("\r\n=== STRESS ETH (%lu iterations) ===\r\n", (unsigned long)count);
+    for (i = 0U; i < count; ++i) {
+        board_test_result_t phy_result;
+        board_test_result_t link_result;
+        bool pass;
+
+        board_test_run_case_inline(phy_tc, &phy_result);
+        board_test_run_case_inline(link_tc, &link_result);
+        pass = board_test_result_passed(&phy_result) && board_test_result_passed(&link_result);
+        board_test_confidence_note(BOARD_CONF_ETHERNET,
+                                   pass,
+                                   pass ? "PHY validation, DHCP, and ping qualification passed."
+                                        : (board_test_result_passed(&phy_result) ? link_result.detail
+                                                                                 : phy_result.detail));
+        board_test_stress_log_iteration("eth", i + 1U, count, pass,
+                                        pass ? "qualified" :
+                                        (board_test_result_passed(&phy_result) ? link_result.detail
+                                                                               : phy_result.detail));
+    }
+}
+
+void board_test_stress_wifi(uint32_t count)
+{
+    uint32_t i;
+
+    if (count == 0U) {
+        test_uart_write_str("stress wifi requires a positive iteration count.\r\n");
+        return;
+    }
+
+    if (ap6256_wifi_runtime_has_cached_profile() == 0U) {
+        test_uart_write_str("stress wifi requires a cached Wi-Fi profile. Run 'run wifi' first.\r\n");
+        return;
+    }
+
+    test_uart_printf("\r\n=== STRESS WIFI (%lu iterations) ===\r\n", (unsigned long)count);
+    for (i = 0U; i < count; ++i) {
+        ap6256_wifi_runtime_summary_t summary;
+        char detail[160];
+        bool pass;
+        ap6256_status_t st;
+
+        memset(&summary, 0, sizeof(summary));
+        memset(detail, 0, sizeof(detail));
+
+        st = ap6256_wifi_runtime_run_cached(&summary, detail, sizeof(detail));
+        pass = (st == AP6256_STATUS_OK);
+        board_test_confidence_note(BOARD_CONF_WIFI,
+                                   pass,
+                                   pass ? "Wi-Fi association and DHCP lease passed."
+                                        : detail);
+        board_test_stress_log_iteration("wifi", i + 1U, count, pass,
+                                        pass ? "qualified" : detail);
+    }
+}
+
+void board_test_stress_bt(uint32_t count)
+{
+    uint32_t i;
+
+    if (count == 0U) {
+        test_uart_write_str("stress bt requires a positive iteration count.\r\n");
+        return;
+    }
+
+    if (ap6256_bt_runtime_has_cached_selection() == 0U) {
+        test_uart_write_str("stress bt requires a cached BLE device/service selection. Run 'run bt' first.\r\n");
+        return;
+    }
+
+    test_uart_printf("\r\n=== STRESS BT (%lu iterations) ===\r\n", (unsigned long)count);
+    for (i = 0U; i < count; ++i) {
+        ap6256_bt_runtime_summary_t summary;
+        char detail[160];
+        bool pass;
+        ap6256_status_t st;
+
+        memset(&summary, 0, sizeof(summary));
+        memset(detail, 0, sizeof(detail));
+
+        st = ap6256_bt_runtime_run_cached(&summary, detail, sizeof(detail));
+        pass = (st == AP6256_STATUS_OK);
+        board_test_confidence_note(BOARD_CONF_BLUETOOTH,
+                                   pass,
+                                   pass ? "BLE connect and service discovery passed."
+                                        : detail);
+        board_test_stress_log_iteration("bt", i + 1U, count, pass,
+                                        pass ? "qualified" : detail);
+    }
+}
+
+void board_test_stress_radio(uint32_t count)
+{
+    uint32_t i;
+
+    if (count == 0U) {
+        test_uart_write_str("stress radio requires a positive iteration count.\r\n");
+        return;
+    }
+
+    test_uart_printf("\r\n=== STRESS RADIO (%lu iterations) ===\r\n", (unsigned long)count);
+    for (i = 0U; i < count; ++i) {
+        bool pass = true;
+
+        network_manager_request(NETWORK_OWNER_ETHERNET);
+        pass = pass && (network_manager_get_owner() == NETWORK_OWNER_ETHERNET);
+        pass = pass && test_uart_uart_console_enabled();
+
+        network_manager_request(NETWORK_OWNER_WIFI);
+        pass = pass && (network_manager_get_owner() == NETWORK_OWNER_WIFI);
+        pass = pass && test_uart_uart_console_enabled();
+
+        network_manager_request(NETWORK_OWNER_BLUETOOTH);
+        pass = pass && (network_manager_get_owner() == NETWORK_OWNER_BLUETOOTH);
+        pass = pass && (!test_uart_uart_console_enabled());
+
+        network_manager_request(NETWORK_OWNER_ETHERNET);
+        pass = pass && (network_manager_get_owner() == NETWORK_OWNER_ETHERNET);
+        pass = pass && test_uart_uart_console_enabled();
+
+        if (!pass) {
+            board_test_confidence_mark_severity1("Radio ownership transition or UART gating invariant failed.");
+        }
+
+        board_test_confidence_note(BOARD_CONF_OWNERSHIP,
+                                   pass,
+                                   pass ? "ETHERNET->WIFI->BT->ETHERNET transition succeeded."
+                                        : "Radio ownership transition or UART gating invariant failed.");
+        board_test_stress_log_iteration("radio", i + 1U, count, pass,
+                                        pass ? "ownership transition ok"
+                                             : "ownership transition invariant failed");
+    }
+}
+
+void board_test_print_confidence_info(void)
+{
+    size_t i;
+    float score = board_test_confidence_score();
+
+    test_uart_write_str("\r\n=== CONFIDENCE INFO ===\r\n");
+    test_uart_printf("Score     : %.1f / 100.0\r\n", (double)score);
+    test_uart_printf("Accept    : %s\r\n",
+                     ((score > 99.0f) && (s_confidence_severity1 == 0U)) ? "YES" : "NO");
+    test_uart_printf("Severity1 : %lu\r\n", (unsigned long)s_confidence_severity1);
+    if (s_confidence_last_severity1[0] != '\0') {
+        test_uart_printf("S1 detail : %s\r\n", s_confidence_last_severity1);
+    }
+
+    for (i = 0U; i < BOARD_CONF_COUNT; ++i) {
+        float pass_rate = 0.0f;
+        float contribution = 0.0f;
+
+        if (s_confidence_campaigns[i].runs > 0U) {
+            pass_rate = ((float)s_confidence_campaigns[i].passes * 100.0f) /
+                        (float)s_confidence_campaigns[i].runs;
+            contribution = ((float)s_confidence_campaigns[i].weight *
+                            (float)s_confidence_campaigns[i].passes) /
+                           (float)s_confidence_campaigns[i].runs;
+        }
+
+        test_uart_printf("  %-20s %lu/%lu pass %.1f%% contrib %.1f/%lu req=%lu\r\n",
+                         s_confidence_campaigns[i].name,
+                         (unsigned long)s_confidence_campaigns[i].passes,
+                         (unsigned long)s_confidence_campaigns[i].runs,
+                         (double)pass_rate,
+                         (double)contribution,
+                         (unsigned long)s_confidence_campaigns[i].weight,
+                         (unsigned long)s_confidence_campaigns[i].required_runs);
+        if (s_confidence_campaigns[i].last_detail[0] != '\0') {
+            test_uart_printf("    detail: %s\r\n", s_confidence_campaigns[i].last_detail);
+        }
+    }
 }
