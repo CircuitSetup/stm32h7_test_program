@@ -91,13 +91,13 @@ Automatic tests:
 - ADE7816 SPI scan and register sanity
 - AP6256 SDIO presence probe
 - AP6256 Bluetooth HCI transport sanity
-- DP83640 MDIO scan, ID, and PHY sanity
+- DP83640 at MDIO address 1, RMII master mode validation, DHCP lease qualification, and external ping readiness
 - Safe GPIO output and input checks
 
 Interactive tests:
 
 - Reset path confirmation with `S1`
-- Ethernet link check with cable attached
+- Ethernet DHCP + ping qualification through the DP83640 at MDIO address 1
 - microSD detect / identify
 - USB-C full-speed bus activity with host cable attached
 

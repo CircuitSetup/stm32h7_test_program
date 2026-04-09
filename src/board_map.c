@@ -214,20 +214,20 @@ static const board_signal_map_t s_signals[] = {
     {
         "PC1", GPIOC, GPIO_PIN_1, "ETH_MDC", "PHY management clock",
         "U6.MDC", TEST_MODE_AUTOMATIC,
-        "Bit-bang Clause-22 MDIO management transactions.",
-        "PHY ID registers and status registers readable with timeout."
+        "DP83640 management clock used for address-1 validation and network qualification.",
+        "PHY state is validated by the network_ethernet module before DHCP and ping tests."
     },
     {
         "PA2", GPIOA, GPIO_PIN_2, "ETH_MDIO", "PHY management data",
         "U6.MDIO via R38/R39", TEST_MODE_AUTOMATIC,
-        "Bit-bang Clause-22 read/write, including BMCR reset.",
-        "PHY responds at a unique address and clears reset bit."
+        "DP83640 management data for address-1 validation and live status reporting.",
+        "PHY configuration is expected to match RMII master mode before DHCP and ping qualification."
     },
     {
         "PA1", GPIOA, GPIO_PIN_1, "RMII_REF_CLK", "RMII 50 MHz ref clock",
         "U6.TX_CLK via R27", TEST_MODE_SANITY,
-        "Indirectly infer clock via successful MDIO + link state updates.",
-        "PHY state registers are stable and link state transitions are valid."
+        "PHY-provided 50 MHz reference clock required for RMII master mode.",
+        "The Ethernet test only proceeds when the DP83640 is valid and link-qualified."
     },
     {
         "PA7", GPIOA, GPIO_PIN_7, "RMII_CRS_DV", "RMII RX control",
@@ -250,8 +250,8 @@ static const board_signal_map_t s_signals[] = {
     {
         "PB11", GPIOB, GPIO_PIN_11, "RMII_TX_EN", "RMII TX control",
         "U6.TX_EN", TEST_MODE_SANITY,
-        "Configured for RMII; optional internal PHY loopback setup only.",
-        "PHY loopback control registers can be set/cleared by MDIO."
+        "Configured for RMII master-mode Ethernet qualification.",
+        "PHY loopback or forced-link states are not acceptable for pass/fail Ethernet testing."
     },
     {
         "PB12", GPIOB, GPIO_PIN_12, "RMII_TXD0", "RMII TX data",
@@ -353,13 +353,13 @@ static const board_gpio_policy_t s_gpio_policy[] = {
     { "PE5", GPIOE, GPIO_PIN_5, "SPI4_MISO", GPIO_CLASS_BIDIRECTIONAL_BUS, "ADE SPI bus" },
     { "PE6", GPIOE, GPIO_PIN_6, "SPI4_MOSI", GPIO_CLASS_BIDIRECTIONAL_BUS, "ADE SPI bus" },
 
-    { "PA1", GPIOA, GPIO_PIN_1, "RMII_REF_CLK", GPIO_CLASS_DO_NOT_TOGGLE, "PHY reference clock input" },
-    { "PA2", GPIOA, GPIO_PIN_2, "ETH_MDIO", GPIO_CLASS_BIDIRECTIONAL_BUS, "MDIO management bus" },
-    { "PC1", GPIOC, GPIO_PIN_1, "ETH_MDC", GPIO_CLASS_BIDIRECTIONAL_BUS, "MDIO management bus" },
+    { "PA1", GPIOA, GPIO_PIN_1, "RMII_REF_CLK", GPIO_CLASS_DO_NOT_TOGGLE, "PHY-provided 50 MHz reference clock for RMII master mode" },
+    { "PA2", GPIOA, GPIO_PIN_2, "ETH_MDIO", GPIO_CLASS_BIDIRECTIONAL_BUS, "DP83640 address-1 management data bus" },
+    { "PC1", GPIOC, GPIO_PIN_1, "ETH_MDC", GPIO_CLASS_BIDIRECTIONAL_BUS, "DP83640 management clock for DHCP/ping qualification" },
     { "PA7", GPIOA, GPIO_PIN_7, "RMII_CRS_DV", GPIO_CLASS_DO_NOT_TOGGLE, "RMII receive control" },
     { "PC4", GPIOC, GPIO_PIN_4, "RMII_RXD0", GPIO_CLASS_DO_NOT_TOGGLE, "RMII receive data" },
     { "PC5", GPIOC, GPIO_PIN_5, "RMII_RXD1", GPIO_CLASS_DO_NOT_TOGGLE, "RMII receive data" },
-    { "PB11", GPIOB, GPIO_PIN_11, "RMII_TX_EN", GPIO_CLASS_DO_NOT_TOGGLE, "RMII transmit control" },
+    { "PB11", GPIOB, GPIO_PIN_11, "RMII_TX_EN", GPIO_CLASS_DO_NOT_TOGGLE, "RMII transmit control used during DHCP and ping qualification" },
     { "PB12", GPIOB, GPIO_PIN_12, "RMII_TXD0", GPIO_CLASS_DO_NOT_TOGGLE, "RMII transmit data" },
     { "PB13", GPIOB, GPIO_PIN_13, "RMII_TXD1", GPIO_CLASS_DO_NOT_TOGGLE, "RMII transmit data" },
 
@@ -468,7 +468,7 @@ static const board_rail_observability_t s_rails[] = {
     { "VDDA", "direct_internal", "Estimated via ADC VREFINT conversion; reports mV." },
     { "VBAT", "sanity_only", "Tied to VDD_MCU through R17; no independent ADC sense path." },
     { "3V3_WIFI", "indirect", "Inferred by AP6256 SDIO/UART response when WL_REG_ON/BT_REG_ON asserted." },
-    { "VDD_ETH", "indirect", "Inferred by DP83640 MDIO register accessibility and stable PHY state." },
+    { "VDD_ETH", "indirect", "Inferred by DP83640 address-1 access, RMII master-mode validation, and DHCP/ping qualification." },
     { "3V3_ADE", "indirect", "Inferred by ADE7816 SPI response across all eight devices." },
     { "3V3_LDO", "not_observable", "No MCU ADC divider/sense path." },
     { "3V3_HLK", "not_observable", "No MCU ADC divider/sense path." },

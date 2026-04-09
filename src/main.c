@@ -1,6 +1,7 @@
 #include "main.h"
 
 #include "board_test.h"
+#include "network_ethernet.h"
 #include "test_console.h"
 #include "test_uart.h"
 #include <string.h>
@@ -382,6 +383,8 @@ int main(void)
     MX_ADC3_Init();
     MX_CRC_Init();
 
+    network_ethernet_boot_start();
+
     board_test_init();
     test_console_banner();
     test_uart_flush_rx();
@@ -393,6 +396,7 @@ int main(void)
     test_console_show_prompt();
 
     while (1) {
+        network_ethernet_poll();
         test_console_poll();
     }
 }
