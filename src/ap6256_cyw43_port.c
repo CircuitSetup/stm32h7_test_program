@@ -20,6 +20,7 @@
 static osMutexId_t s_cyw43_mutex;
 static volatile uint8_t s_poll_pending;
 static uint8_t s_sdio_open;
+extern void (*cyw43_poll)(void);
 
 static osMutexId_t ap6256_cyw43_mutex(void)
 {
@@ -141,6 +142,7 @@ void ap6256_cyw43_port_init(void)
 
 void ap6256_cyw43_port_deinit(void)
 {
+    cyw43_poll = NULL;
     s_poll_pending = 0U;
 }
 
@@ -204,8 +206,27 @@ void cyw43_hal_pin_config(int pin, int mode, int pull, int alt)
 
 void cyw43_hal_pin_config_irq_falling(int pin, int enable)
 {
-    (void)pin;
-    (void)enable;
+    GPIO_InitTypeDef gpio;
+
+    if (pin != CYW43_PIN_WL_SDIO_1) {
+        return;
+    }
+
+    memset(&gpio, 0, sizeof(gpio));
+    gpio.Pin = AP6256_CYW43_SDIO_DAT1_PIN;
+    gpio.Pull = GPIO_NOPULL;
+    gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+
+    if (enable != 0) {
+        gpio.Mode = GPIO_MODE_IT_FALLING;
+        HAL_GPIO_Init(AP6256_CYW43_SDIO_DAT1_PORT, &gpio);
+        HAL_NVIC_SetPriority(EXTI9_5_IRQn, 6U, 0U);
+        HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
+    } else {
+        gpio.Mode = GPIO_MODE_INPUT;
+        HAL_GPIO_Init(AP6256_CYW43_SDIO_DAT1_PORT, &gpio);
+        HAL_NVIC_DisableIRQ(EXTI9_5_IRQn);
+    }
 }
 
 int cyw43_hal_pin_read(int pin)
@@ -236,16 +257,13 @@ void cyw43_hal_pin_high(int pin)
 
 void cyw43_schedule_internal_poll_dispatch(void (*func)(void))
 {
-    (void)func;
-    s_poll_pending = 1U;
+    cyw43_poll = func;
+    s_poll_pending = (func != NULL) ? 1U : 0U;
 }
 
 void ap6256_cyw43_port_poll(void)
 {
-    extern void (*cyw43_poll)(void);
-
     if (cyw43_poll == NULL) {
-        s_poll_pending = 0U;
         return;
     }
 
@@ -289,7 +307,7 @@ void cyw43_sdio_deinit(void)
 
 void cyw43_sdio_set_irq(bool enable)
 {
-    (void)enable;
+    cyw43_hal_pin_config_irq_falling(CYW43_PIN_WL_SDIO_1, enable ? 1 : 0);
 }
 
 void cyw43_sdio_enable_high_speed_4bit(void)
@@ -359,4 +377,12 @@ int cyw43_sdio_transfer_cmd53(bool write, uint32_t block_size, uint32_t arg, siz
     }
 
     return ap6256_cyw43_status_to_errno(st);
+}
+
+void EXTI9_5_IRQHandler(void)
+{
+    if (__HAL_GPIO_EXTI_GET_IT(AP6256_CYW43_SDIO_DAT1_PIN) != RESET) {
+        __HAL_GPIO_EXTI_CLEAR_IT(AP6256_CYW43_SDIO_DAT1_PIN);
+        s_poll_pending = 1U;
+    }
 }

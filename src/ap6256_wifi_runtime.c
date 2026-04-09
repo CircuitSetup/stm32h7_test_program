@@ -2,6 +2,7 @@
 
 #include "ap6256_connectivity.h"
 #include "ap6256_cyw43_port.h"
+#include "ap6256_assets.h"
 #include "cyw43.h"
 #include "cyw43_country.h"
 #include "network_manager.h"
@@ -224,6 +225,8 @@ static bool ap6256_wifi_runtime_wait_for_scan_complete(uint32_t timeout_ms)
     uint32_t start_ms = HAL_GetTick();
 
     while (cyw43_wifi_scan_active(&cyw43_state)) {
+        ap6256_cyw43_port_poll();
+
         if ((HAL_GetTick() - start_ms) >= timeout_ms) {
             return false;
         }
@@ -242,7 +245,9 @@ static bool ap6256_wifi_runtime_wait_for_link(uint32_t timeout_ms, int *final_st
     }
 
     while ((HAL_GetTick() - start_ms) < timeout_ms) {
-        int status = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
+    ap6256_cyw43_port_poll();
+
+    int status = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
 
         if (final_status != NULL) {
             *final_status = status;
@@ -288,6 +293,36 @@ static void ap6256_wifi_runtime_capture_profile(const ap6256_wifi_scan_entry_t *
                                          (entry->secure != 0U) ? 1U : 0U);
 }
 
+static bool ap6256_wifi_runtime_wait_for_poll_ptr(uint32_t timeout_ms)
+{
+    uint32_t start_ms = HAL_GetTick();
+
+    while ((HAL_GetTick() - start_ms) < timeout_ms) {
+        ap6256_cyw43_port_poll();
+        if (cyw43_poll != NULL) {
+            return true;
+        }
+        osDelay(1U);
+    }
+
+    return false;
+}
+
+static bool ap6256_wifi_runtime_wait_for_sta_ready(uint32_t timeout_ms)
+{
+    uint32_t start_ms = HAL_GetTick();
+
+    while ((HAL_GetTick() - start_ms) < timeout_ms) {
+        ap6256_cyw43_port_poll();
+        if ((cyw43_state.itf_state & (1U << CYW43_ITF_STA)) != 0U) {
+            return true;
+        }
+        osDelay(1U);
+    }
+
+    return false;
+}
+
 static bool ap6256_wifi_runtime_ensure_ready(char *detail, size_t detail_len)
 {
     if (s_wifi_runtime.initialized != 0U) {
@@ -295,10 +330,36 @@ static bool ap6256_wifi_runtime_ensure_ready(char *detail, size_t detail_len)
     }
 
     ap6256_cyw43_port_init();
+
+    if (ap6256_assets_ready() == 0U) {
+        (void)snprintf(detail,
+                       detail_len,
+                       "AP6256 assets are not ready.");
+        ap6256_connectivity_set_wifi_note(detail);
+        ap6256_cyw43_port_deinit();
+        return false;
+    }
+
     cyw43_init(&cyw43_state);
+
+    if (!ap6256_wifi_runtime_wait_for_poll_ptr(500U)) {
+        (void)snprintf(detail,
+                       detail_len,
+                       "cyw43_init ran but cyw43_poll stayed NULL.");
+        ap6256_connectivity_set_wifi_note(detail);
+        cyw43_deinit(&cyw43_state);
+        ap6256_cyw43_port_deinit();
+        return false;
+    }
+
     cyw43_wifi_set_up(&cyw43_state, CYW43_ITF_STA, true, CYW43_COUNTRY_USA);
-    if (((cyw43_state.itf_state & (1U << CYW43_ITF_STA)) == 0U) || (cyw43_poll == NULL)) {
-        (void)snprintf(detail, detail_len, "BCM43456 Wi-Fi bring-up failed during CYW43 STA setup.");
+
+    if (!ap6256_wifi_runtime_wait_for_sta_ready(1000U)) {
+        (void)snprintf(detail,
+                       detail_len,
+                       "STA never became ready: itf_state=0x%08lx poll=%p.",
+                       (unsigned long)cyw43_state.itf_state,
+                       (void *)cyw43_poll);
         ap6256_connectivity_set_wifi_note(detail);
         cyw43_deinit(&cyw43_state);
         ap6256_cyw43_port_deinit();
