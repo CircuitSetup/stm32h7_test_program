@@ -1,6 +1,7 @@
 #include "ap6256_wifi_runtime.h"
 
 #include "ap6256_connectivity.h"
+#include "ap6256_cyw43_compat.h"
 #include "ap6256_cyw43_port.h"
 #include "ap6256_assets.h"
 #include "cyw43.h"
@@ -298,7 +299,6 @@ static bool ap6256_wifi_runtime_wait_for_poll_ptr(uint32_t timeout_ms)
     uint32_t start_ms = HAL_GetTick();
 
     while ((HAL_GetTick() - start_ms) < timeout_ms) {
-        ap6256_cyw43_port_poll();
         if (cyw43_poll != NULL) {
             return true;
         }
@@ -323,13 +323,101 @@ static bool ap6256_wifi_runtime_wait_for_sta_ready(uint32_t timeout_ms)
     return false;
 }
 
+static const char *ap6256_wifi_runtime_bus_init_ret_name(int32_t bus_init_ret)
+{
+    switch (bus_init_ret) {
+    case 0:
+        return "not_started";
+    case -CYW43_EIO:
+        return "io_error";
+    case -CYW43_ETIMEDOUT:
+        return "timeout";
+    case -CYW43_EINVAL:
+        return "bad_param";
+    case -CYW43_EPERM:
+        return "unsupported_chip";
+    default:
+        return "unknown";
+    }
+}
+
+static const char *ap6256_wifi_runtime_stage_name(uint32_t stage)
+{
+    switch (stage) {
+    case 0U:
+        return "none";
+    case 1U:
+        return "start";
+    case 2U:
+        return "backplane_up";
+    case 3U:
+        return "backplane_ready";
+    case 4U:
+        return "alp_set";
+    case 5U:
+        return "fw_nvram";
+    case 6U:
+        return "ht_ready";
+    case 7U:
+        return "f2_ready";
+    case 8U:
+        return "clm_load";
+    case 9U:
+        return "txglom";
+    case 10U:
+        return "apsta";
+    case 101U:
+        return "poll_hdr";
+    case 102U:
+        return "poll_payload";
+    case 103U:
+        return "poll_parse";
+    default:
+        return "other";
+    }
+}
+
+static void ap6256_wifi_runtime_publish_compat_diag(void)
+{
+    ap6256_connectivity_set_wifi_compat(ap6256_cyw43_port_chip_id_raw(),
+                                        ap6256_cyw43_port_ram_base_addr(),
+                                        ap6256_cyw43_port_ram_size_bytes(),
+                                        ap6256_cyw43_port_nvram_packed_len(),
+                                        ap6256_cyw43_port_nvram_padded_len(),
+                                        ap6256_cyw43_port_nvram_footer_word(),
+                                        ap6256_cyw43_port_nvram_using_reference(),
+                                        ap6256_cyw43_port_bus_stage(),
+                                        ap6256_cyw43_port_chip_clock_csr_diag(),
+                                        ap6256_cyw43_port_sr_control1_diag(),
+                                        ap6256_cyw43_port_wlan_ioctrl_diag(),
+                                        ap6256_cyw43_port_wlan_resetctrl_diag(),
+                                        ap6256_cyw43_port_socram_ioctrl_diag(),
+                                        ap6256_cyw43_port_socram_resetctrl_diag());
+}
+
 static bool ap6256_wifi_runtime_ensure_ready(char *detail, size_t detail_len)
 {
     if (s_wifi_runtime.initialized != 0U) {
+        test_uart_write_str("[ INFO ] wifi.connect stage: runtime already initialized\r\n");
         return true;
     }
 
+    test_uart_write_str("[ INFO ] wifi.connect stage: cyw43 port init\r\n");
     ap6256_cyw43_port_init();
+    ap6256_connectivity_set_wifi_compat(0U,
+                                        AP6256_CYW43_RAM_BASE,
+                                        AP6256_CYW43_RAM_SIZE_BYTES,
+                                        0U,
+                                        0U,
+                                        0U,
+                                        (ap6256_cyw43_port_reference_nvram_enabled() == 0U) ? 1U : 0U,
+                                        0U,
+                                        0U,
+                                        0U,
+                                        0U,
+                                        0U,
+                                        0U,
+                                        0U);
 
     if (ap6256_assets_ready() == 0U) {
         (void)snprintf(detail,
@@ -340,32 +428,67 @@ static bool ap6256_wifi_runtime_ensure_ready(char *detail, size_t detail_len)
         return false;
     }
 
+    test_uart_write_str("[ INFO ] wifi.connect stage: cyw43_init\r\n");
     cyw43_init(&cyw43_state);
 
-    if (!ap6256_wifi_runtime_wait_for_poll_ptr(500U)) {
-        (void)snprintf(detail,
-                       detail_len,
-                       "cyw43_init ran but cyw43_poll stayed NULL.");
-        ap6256_connectivity_set_wifi_note(detail);
-        cyw43_deinit(&cyw43_state);
-        ap6256_cyw43_port_deinit();
-        return false;
-    }
-
+    test_uart_write_str("[ INFO ] wifi.connect stage: cyw43_wifi_set_up enter\r\n");
     cyw43_wifi_set_up(&cyw43_state, CYW43_ITF_STA, true, CYW43_COUNTRY_USA);
+    test_uart_write_str("[ INFO ] wifi.connect stage: cyw43_wifi_set_up exit\r\n");
 
-    if (!ap6256_wifi_runtime_wait_for_sta_ready(1000U)) {
+    /* In this CYW43 driver, SDIO init and poll callback installation happen
+    during ensure_up(), not during cyw43_init(). */
+    test_uart_write_str("[ INFO ] wifi.connect stage: wait poll ptr\r\n");
+    if (!ap6256_wifi_runtime_wait_for_poll_ptr(1500U)) {
+        ap6256_wifi_runtime_publish_compat_diag();
         (void)snprintf(detail,
-                       detail_len,
-                       "STA never became ready: itf_state=0x%08lx poll=%p.",
-                       (unsigned long)cyw43_state.itf_state,
-                       (void *)cyw43_poll);
+               detail_len,
+               "CYW43 bus=%ld/%s st=%lu/%s chip=%04X/r%u ram=%05lX nv=%s:%lu/%lu clk=%02X wi=%02lX wr=%02lX si=%02lX sr=%02lX cmd=%lu/%08lX rsp=%02lX c53=%lu",
+               (long)ap6256_cyw43_port_last_bus_init_ret(),
+               ap6256_wifi_runtime_bus_init_ret_name(ap6256_cyw43_port_last_bus_init_ret()),
+               (unsigned long)ap6256_cyw43_port_bus_stage(),
+               ap6256_wifi_runtime_stage_name(ap6256_cyw43_port_bus_stage()),
+               ap6256_cyw43_chip_id_from_raw(ap6256_cyw43_port_chip_id_raw()),
+               ap6256_cyw43_chip_rev_from_raw(ap6256_cyw43_port_chip_id_raw()),
+               (unsigned long)ap6256_cyw43_port_ram_size_bytes(),
+               ap6256_cyw43_port_nvram_using_reference() ? "ap6256" : "generic",
+               (unsigned long)ap6256_cyw43_port_nvram_packed_len(),
+               (unsigned long)ap6256_cyw43_port_nvram_padded_len(),
+               (unsigned)ap6256_cyw43_port_chip_clock_csr_diag(),
+               (unsigned long)ap6256_cyw43_port_wlan_ioctrl_diag(),
+               (unsigned long)ap6256_cyw43_port_wlan_resetctrl_diag(),
+               (unsigned long)ap6256_cyw43_port_socram_ioctrl_diag(),
+               (unsigned long)ap6256_cyw43_port_socram_resetctrl_diag(),
+               (unsigned long)ap6256_cyw43_port_last_cmd(),
+               (unsigned long)ap6256_cyw43_port_last_cmd_arg(),
+               (unsigned long)ap6256_cyw43_port_last_cmd_response(),
+               (unsigned long)ap6256_cyw43_port_last_cmd53_count());
         ap6256_connectivity_set_wifi_note(detail);
         cyw43_deinit(&cyw43_state);
         ap6256_cyw43_port_deinit();
         return false;
     }
 
+    test_uart_write_str("[ INFO ] wifi.connect stage: wait STA ready\r\n");
+    if (!ap6256_wifi_runtime_wait_for_sta_ready(1500U)) {
+        ap6256_wifi_runtime_publish_compat_diag();
+        (void)snprintf(detail,
+                    detail_len,
+                    "STA not ready: itf=0x%08lx poll=%p chip=%04X/r%u st=%lu/%s clk=%02X",
+                    (unsigned long)cyw43_state.itf_state,
+                    (void *)cyw43_poll,
+                    ap6256_cyw43_chip_id_from_raw(ap6256_cyw43_port_chip_id_raw()),
+                    ap6256_cyw43_chip_rev_from_raw(ap6256_cyw43_port_chip_id_raw()),
+                    (unsigned long)ap6256_cyw43_port_bus_stage(),
+                    ap6256_wifi_runtime_stage_name(ap6256_cyw43_port_bus_stage()),
+                    (unsigned)ap6256_cyw43_port_chip_clock_csr_diag());
+        ap6256_connectivity_set_wifi_note(detail);
+        cyw43_deinit(&cyw43_state);
+        ap6256_cyw43_port_deinit();
+        return false;
+    }
+
+    test_uart_write_str("[ INFO ] wifi.connect stage: runtime ready\r\n");
+    ap6256_wifi_runtime_publish_compat_diag();
     s_wifi_runtime.initialized = 1U;
     s_wifi_runtime.stack_ready = 1U;
     ap6256_connectivity_set_wifi_runtime(1U, 1U, s_wifi_runtime.last_scan_count, s_wifi_runtime.last_rssi);
@@ -427,6 +550,7 @@ static ap6256_status_t ap6256_wifi_runtime_run_common(const char *ssid,
         return AP6256_STATUS_IO_ERROR;
     }
 
+    test_uart_write_str("[ INFO ] wifi.connect stage: wait link/dhcp\r\n");
     if (!ap6256_wifi_runtime_wait_for_link(AP6256_WIFI_DHCP_TIMEOUT_MS, &final_status)) {
         const char *reason = "timed out waiting for association/DHCP";
 
@@ -506,6 +630,7 @@ void ap6256_wifi_runtime_suspend(void)
     ap6256_cyw43_port_deinit();
     s_wifi_runtime.initialized = 0U;
     s_wifi_runtime.link_up = 0U;
+    ap6256_wifi_runtime_publish_compat_diag();
     ap6256_connectivity_set_wifi_runtime(1U, 0U, s_wifi_runtime.last_scan_count, s_wifi_runtime.last_rssi);
     ap6256_connectivity_set_wifi_note("BCM43456 Wi-Fi runtime suspended.");
 }
@@ -513,6 +638,17 @@ void ap6256_wifi_runtime_suspend(void)
 uint8_t ap6256_wifi_runtime_has_cached_profile(void)
 {
     return s_wifi_runtime.has_cached_profile;
+}
+
+void ap6256_wifi_runtime_set_reference_nvram(uint8_t enable)
+{
+    ap6256_cyw43_port_set_reference_nvram_enabled(enable);
+    ap6256_wifi_runtime_publish_compat_diag();
+}
+
+uint8_t ap6256_wifi_runtime_reference_nvram_enabled(void)
+{
+    return ap6256_cyw43_port_reference_nvram_enabled();
 }
 
 ap6256_status_t ap6256_wifi_runtime_run_interactive(ap6256_wifi_runtime_summary_t *summary,
@@ -535,12 +671,14 @@ ap6256_status_t ap6256_wifi_runtime_run_interactive(ap6256_wifi_runtime_summary_
         return AP6256_STATUS_TIMEOUT;
     }
 
+    test_uart_write_str("[ INFO ] wifi.connect stage: acquired wifi owner\r\n");
     memset(password, 0, sizeof(password));
     if (!ap6256_wifi_runtime_ensure_ready(detail, detail_len)) {
         network_manager_release(NETWORK_OWNER_WIFI);
         return AP6256_STATUS_IO_ERROR;
     }
 
+    test_uart_write_str("[ INFO ] wifi.connect stage: start scan\r\n");
     ap6256_wifi_runtime_clear_scan_results();
     memset(&opts, 0, sizeof(opts));
     opts.scan_type = 0;
@@ -559,6 +697,7 @@ ap6256_status_t ap6256_wifi_runtime_run_interactive(ap6256_wifi_runtime_summary_
         return AP6256_STATUS_TIMEOUT;
     }
 
+    test_uart_write_str("[ INFO ] wifi.connect stage: scan complete\r\n");
     ap6256_wifi_runtime_sort_scan_results();
     ap6256_connectivity_set_wifi_runtime(1U, 1U, s_wifi_runtime.last_scan_count, s_wifi_runtime.last_rssi);
 
@@ -569,6 +708,7 @@ ap6256_status_t ap6256_wifi_runtime_run_interactive(ap6256_wifi_runtime_summary_
         return AP6256_STATUS_TIMEOUT;
     }
 
+    test_uart_write_str("[ INFO ] wifi.connect stage: prompt ssid selection\r\n");
     ap6256_wifi_runtime_print_scan_results();
     scan_index = ap6256_wifi_runtime_prompt_index("Select Wi-Fi network number: ",
                                                   s_wifi_runtime.last_scan_count);
@@ -592,6 +732,7 @@ ap6256_status_t ap6256_wifi_runtime_run_interactive(ap6256_wifi_runtime_summary_
     }
 
     if (selected->secure != 0U) {
+        test_uart_write_str("[ INFO ] wifi.connect stage: prompt password\r\n");
         test_uart_write_str("Wi-Fi password: ");
         password_len = test_uart_read_line_masked(password, sizeof(password), AP6256_WIFI_PROMPT_TIMEOUT_MS);
         if (password_len <= 0) {
@@ -602,6 +743,7 @@ ap6256_status_t ap6256_wifi_runtime_run_interactive(ap6256_wifi_runtime_summary_
         }
     }
 
+    test_uart_write_str("[ INFO ] wifi.connect stage: join start\r\n");
     ap6256_wifi_runtime_capture_profile(selected, password);
     return ap6256_wifi_runtime_run_common(selected->ssid,
                                           password,

@@ -67,6 +67,8 @@ typedef struct {
 void ap6256_init(void);
 void ap6256_set_enables(uint8_t wl_on, uint8_t bt_on);
 void ap6256_power_down(void);
+ap6256_status_t ap6256_sdio_bus_prepare(uint8_t wl_on, uint8_t bt_on);
+void ap6256_sdio_session_adopt(uint16_t rca);
 
 ap6256_status_t ap6256_sdio_open(ap6256_sdio_session_t *session, uint8_t wl_on, uint8_t bt_on);
 void ap6256_sdio_close(void);
@@ -78,12 +80,26 @@ ap6256_status_t ap6256_sdio_cmd53_read(uint8_t function,
                                        uint32_t len,
                                        uint8_t block_mode,
                                        uint8_t op_code);
+ap6256_status_t ap6256_sdio_cmd53_read_ex(uint8_t function,
+                                          uint32_t address,
+                                          uint8_t *data,
+                                          uint32_t len,
+                                          uint8_t block_mode,
+                                          uint8_t op_code,
+                                          uint32_t block_size);
 ap6256_status_t ap6256_sdio_cmd53_write(uint8_t function,
                                         uint32_t address,
                                         const uint8_t *data,
                                         uint32_t len,
                                         uint8_t block_mode,
                                         uint8_t op_code);
+ap6256_status_t ap6256_sdio_cmd53_write_ex(uint8_t function,
+                                           uint32_t address,
+                                           const uint8_t *data,
+                                           uint32_t len,
+                                           uint8_t block_mode,
+                                           uint8_t op_code,
+                                           uint32_t block_size);
 ap6256_status_t ap6256_sdio_enable_function(uint8_t function);
 ap6256_status_t ap6256_sdio_set_block_size(uint8_t function, uint16_t block_size);
 ap6256_status_t ap6256_bcm_prepare_control_bus(uint8_t *chip_clock_csr_out);

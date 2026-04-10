@@ -9,6 +9,7 @@
 
 #include <stdbool.h>
 #include <string.h>
+#include <stdint.h>
 
 #define AP6256_CYW43_SDIO_CMD_TIMEOUT_MS 120U
 #define AP6256_CYW43_SDIO_READY_TIMEOUT_MS 500U
@@ -21,6 +22,64 @@ static osMutexId_t s_cyw43_mutex;
 static volatile uint8_t s_poll_pending;
 static uint8_t s_sdio_open;
 extern void (*cyw43_poll)(void);
+static volatile uint32_t s_cyw43_sched_calls;
+static volatile uintptr_t s_cyw43_last_sched_func;
+static volatile uint32_t s_cyw43_sdio_init_calls;
+static volatile uint32_t s_cyw43_sdio_reinit_calls;
+static volatile int32_t s_cyw43_last_bus_init_ret;
+static volatile uint32_t s_cyw43_bus_stage;
+static volatile int32_t s_cyw43_poll_header_read_status;
+static volatile int32_t s_cyw43_poll_payload_read_status;
+static volatile uint16_t s_cyw43_poll_hdr0;
+static volatile uint16_t s_cyw43_poll_hdr1;
+static volatile uint8_t s_cyw43_last_cmd53_write;
+static volatile uint8_t s_cyw43_last_cmd53_function;
+static volatile uint8_t s_cyw43_last_cmd53_block_mode;
+static volatile uint32_t s_cyw43_last_cmd53_block_size;
+static volatile uint32_t s_cyw43_last_cmd53_length;
+static volatile int32_t s_cyw43_last_cmd53_status;
+static volatile uint16_t s_cyw43_last_cmd53_frame_size;
+static volatile uint32_t s_cyw43_last_cmd53_count;
+static volatile uint32_t s_cyw43_last_cmd;
+static volatile uint32_t s_cyw43_last_cmd_arg;
+static volatile int32_t s_cyw43_last_cmd_status;
+static volatile uint32_t s_cyw43_last_cmd_response;
+static volatile uint32_t s_cyw43_chip_id_raw;
+static volatile uint32_t s_cyw43_ram_base_addr;
+static volatile uint32_t s_cyw43_ram_size_bytes;
+static volatile uint32_t s_cyw43_nvram_packed_len;
+static volatile uint32_t s_cyw43_nvram_padded_len;
+static volatile uint32_t s_cyw43_nvram_footer_word;
+static volatile uint8_t s_cyw43_nvram_using_reference;
+static volatile uint8_t s_cyw43_chip_clock_csr_diag;
+static volatile uint32_t s_cyw43_sr_control1_diag;
+static volatile uint32_t s_cyw43_wlan_ioctrl_diag;
+static volatile uint32_t s_cyw43_wlan_resetctrl_diag;
+static volatile uint32_t s_cyw43_socram_ioctrl_diag;
+static volatile uint32_t s_cyw43_socram_resetctrl_diag;
+static volatile uint8_t s_cyw43_reference_nvram_enabled;
+
+static void ap6256_cyw43_port_record_cmd53(uint8_t write,
+                                           uint8_t function,
+                                           uint8_t block_mode,
+                                           uint32_t block_size,
+                                           uint32_t len,
+                                           int32_t status,
+                                           const uint8_t *buf)
+{
+    s_cyw43_last_cmd53_count++;
+    s_cyw43_last_cmd53_write = write;
+    s_cyw43_last_cmd53_function = function;
+    s_cyw43_last_cmd53_block_mode = block_mode;
+    s_cyw43_last_cmd53_block_size = block_size;
+    s_cyw43_last_cmd53_length = len;
+    s_cyw43_last_cmd53_status = status;
+    s_cyw43_last_cmd53_frame_size = 0U;
+
+    if ((write == 0U) && (status == 0) && (buf != NULL) && (len >= 2U)) {
+        s_cyw43_last_cmd53_frame_size = (uint16_t)buf[0] | ((uint16_t)buf[1] << 8U);
+    }
+}
 
 static osMutexId_t ap6256_cyw43_mutex(void)
 {
@@ -144,6 +203,41 @@ void ap6256_cyw43_port_deinit(void)
 {
     cyw43_poll = NULL;
     s_poll_pending = 0U;
+    s_cyw43_sched_calls = 0U;
+    s_cyw43_last_sched_func = 0U;
+    s_cyw43_sdio_init_calls = 0U;
+    s_cyw43_sdio_reinit_calls = 0U;
+    s_cyw43_last_bus_init_ret = 0;
+    s_cyw43_bus_stage = 0U;
+    s_cyw43_poll_header_read_status = 0;
+    s_cyw43_poll_payload_read_status = 0;
+    s_cyw43_poll_hdr0 = 0U;
+    s_cyw43_poll_hdr1 = 0U;
+    s_cyw43_last_cmd53_write = 0U;
+    s_cyw43_last_cmd53_function = 0U;
+    s_cyw43_last_cmd53_block_mode = 0U;
+    s_cyw43_last_cmd53_block_size = 0U;
+    s_cyw43_last_cmd53_length = 0U;
+    s_cyw43_last_cmd53_status = 0;
+    s_cyw43_last_cmd53_frame_size = 0U;
+    s_cyw43_last_cmd53_count = 0U;
+    s_cyw43_last_cmd = 0U;
+    s_cyw43_last_cmd_arg = 0U;
+    s_cyw43_last_cmd_status = 0;
+    s_cyw43_last_cmd_response = 0U;
+    s_cyw43_chip_id_raw = 0U;
+    s_cyw43_ram_base_addr = 0U;
+    s_cyw43_ram_size_bytes = 0U;
+    s_cyw43_nvram_packed_len = 0U;
+    s_cyw43_nvram_padded_len = 0U;
+    s_cyw43_nvram_footer_word = 0U;
+    s_cyw43_nvram_using_reference = 0U;
+    s_cyw43_chip_clock_csr_diag = 0U;
+    s_cyw43_sr_control1_diag = 0U;
+    s_cyw43_wlan_ioctrl_diag = 0U;
+    s_cyw43_wlan_resetctrl_diag = 0U;
+    s_cyw43_socram_ioctrl_diag = 0U;
+    s_cyw43_socram_resetctrl_diag = 0U;
 }
 
 void ap6256_cyw43_thread_enter(void)
@@ -206,27 +300,17 @@ void cyw43_hal_pin_config(int pin, int mode, int pull, int alt)
 
 void cyw43_hal_pin_config_irq_falling(int pin, int enable)
 {
-    GPIO_InitTypeDef gpio;
-
-    if (pin != CYW43_PIN_WL_SDIO_1) {
-        return;
-    }
-
-    memset(&gpio, 0, sizeof(gpio));
-    gpio.Pin = AP6256_CYW43_SDIO_DAT1_PIN;
-    gpio.Pull = GPIO_NOPULL;
-    gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-
-    if (enable != 0) {
-        gpio.Mode = GPIO_MODE_IT_FALLING;
-        HAL_GPIO_Init(AP6256_CYW43_SDIO_DAT1_PORT, &gpio);
-        HAL_NVIC_SetPriority(EXTI9_5_IRQn, 6U, 0U);
-        HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
-    } else {
-        gpio.Mode = GPIO_MODE_INPUT;
-        HAL_GPIO_Init(AP6256_CYW43_SDIO_DAT1_PORT, &gpio);
-        HAL_NVIC_DisableIRQ(EXTI9_5_IRQn);
-    }
+    /*
+     * CYW43 uses WL_SDIO_1/DAT1 as its in-band interrupt source in SDIO mode.
+     * On STM32H7, reconfiguring PC9 from SDMMC alternate-function into EXTI GPIO
+     * steals DAT1 away from the 4-bit SDIO bus and can wedge subsequent transfers.
+     *
+     * Keep DAT1 owned by SDMMC1 at all times and treat interrupt enable/disable
+     * as a logical no-op. The runtime already polls from a dedicated FreeRTOS task,
+     * and cyw43_cb_read_host_interrupt_pin() can still sample the live DAT1 level.
+     */
+    (void)pin;
+    (void)enable;
 }
 
 int cyw43_hal_pin_read(int pin)
@@ -257,6 +341,8 @@ void cyw43_hal_pin_high(int pin)
 
 void cyw43_schedule_internal_poll_dispatch(void (*func)(void))
 {
+    s_cyw43_sched_calls++;
+    s_cyw43_last_sched_func = (uintptr_t)func;
     cyw43_poll = func;
     s_poll_pending = (func != NULL) ? 1U : 0U;
 }
@@ -280,18 +366,17 @@ uint8_t ap6256_cyw43_port_pending_poll(void)
 
 void cyw43_sdio_init(void)
 {
-    ap6256_sdio_session_t session;
+    ap6256_status_t st;
 
-    memset(&session, 0, sizeof(session));
-    if (ap6256_sdio_open(&session, 1U, 0U) == AP6256_STATUS_OK) {
-        s_sdio_open = 1U;
-    } else {
-        s_sdio_open = 0U;
-    }
+    s_cyw43_sdio_init_calls++;
+    st = ap6256_sdio_bus_prepare(1U, 0U);
+    s_sdio_open = (st == AP6256_STATUS_OK) ? 1U : 0U;
 }
 
 void cyw43_sdio_reinit(void)
 {
+    s_cyw43_sdio_reinit_calls++;
+
     if (s_sdio_open == 0U) {
         cyw43_sdio_init();
     }
@@ -307,32 +392,45 @@ void cyw43_sdio_deinit(void)
 
 void cyw43_sdio_set_irq(bool enable)
 {
-    cyw43_hal_pin_config_irq_falling(CYW43_PIN_WL_SDIO_1, enable ? 1 : 0);
+    /*
+     * See cyw43_hal_pin_config_irq_falling(): do not hand SDIO DAT1 to EXTI on
+     * this board. Leave the pin mux on SDMMC1 and rely on the Wi-Fi poll task.
+     */
+    (void)enable;
 }
 
 void cyw43_sdio_enable_high_speed_4bit(void)
 {
+    /*
+     * Keep the bus conservative during bring-up. The previous divider of 1 was
+     * aggressive enough that short register traffic could work while the first
+     * sustained firmware-download block transfer timed out.
+     */
     MODIFY_REG(SDMMC1->CLKCR,
                SDMMC_CLKCR_WIDBUS | SDMMC_CLKCR_CLKDIV,
-               SDMMC_CLKCR_WIDBUS_0 | 1U);
+               SDMMC_CLKCR_WIDBUS_0 | 8U);
 }
 
 int cyw43_sdio_transfer(uint32_t cmd, uint32_t arg, uint32_t *resp)
 {
     ap6256_status_t st;
+    uint32_t local_resp = 0U;
 
     switch (cmd) {
     case 0U:
         st = ap6256_cyw43_send_cmd(0U, 0U, AP6256_CYW43_RESP_NONE, 1U, NULL);
         break;
     case 3U:
-        st = ap6256_cyw43_send_cmd(3U, 0U, AP6256_CYW43_RESP_SHORT, 1U, resp);
+        st = ap6256_cyw43_send_cmd(3U, 0U, AP6256_CYW43_RESP_SHORT, 1U, &local_resp);
         break;
     case 5U:
-        st = ap6256_cyw43_send_cmd(5U, arg, AP6256_CYW43_RESP_SHORT, 1U, resp);
+        st = ap6256_cyw43_send_cmd(5U, arg, AP6256_CYW43_RESP_SHORT, 1U, &local_resp);
         break;
     case 7U:
         st = ap6256_cyw43_send_cmd(7U, arg, AP6256_CYW43_RESP_SHORT, 1U, NULL);
+        if (st == AP6256_STATUS_OK) {
+            ap6256_sdio_session_adopt((uint16_t)((arg >> 16U) & 0xFFFFU));
+        }
         break;
     case 52U: {
         uint8_t value = 0U;
@@ -341,13 +439,13 @@ int cyw43_sdio_transfer(uint32_t cmd, uint32_t arg, uint32_t *resp)
 
         if ((arg & 0x80000000UL) != 0U) {
             st = ap6256_sdio_cmd52_write_u8(function, address, (uint8_t)(arg & 0xFFU));
-            if ((st == AP6256_STATUS_OK) && (resp != NULL)) {
-                *resp = (arg & 0xFFU);
+            if (st == AP6256_STATUS_OK) {
+                local_resp = (arg & 0xFFU);
             }
         } else {
             st = ap6256_sdio_cmd52_read_u8(function, address, &value);
-            if ((st == AP6256_STATUS_OK) && (resp != NULL)) {
-                *resp = value;
+            if (st == AP6256_STATUS_OK) {
+                local_resp = value;
             }
         }
         break;
@@ -357,26 +455,38 @@ int cyw43_sdio_transfer(uint32_t cmd, uint32_t arg, uint32_t *resp)
         break;
     }
 
+    if (resp != NULL) {
+        *resp = local_resp;
+    }
+
+    ap6256_cyw43_port_record_last_cmd(cmd, arg, ap6256_cyw43_status_to_errno(st), local_resp);
     return ap6256_cyw43_status_to_errno(st);
 }
 
 int cyw43_sdio_transfer_cmd53(bool write, uint32_t block_size, uint32_t arg, size_t len, uint8_t *buf)
 {
     ap6256_status_t st;
+    int result;
     uint8_t function = (uint8_t)((arg >> 28U) & 0x07U);
     uint8_t block_mode = (uint8_t)((arg >> 27U) & 0x01U);
     uint8_t op_code = (uint8_t)((arg >> 26U) & 0x01U);
     uint32_t address = (arg >> 9U) & 0x1FFFFU;
 
-    (void)block_size;
-
     if (write) {
-        st = ap6256_sdio_cmd53_write(function, address, buf, (uint32_t)len, block_mode, op_code);
+        st = ap6256_sdio_cmd53_write_ex(function, address, buf, (uint32_t)len, block_mode, op_code, block_size);
     } else {
-        st = ap6256_sdio_cmd53_read(function, address, buf, (uint32_t)len, block_mode, op_code);
+        st = ap6256_sdio_cmd53_read_ex(function, address, buf, (uint32_t)len, block_mode, op_code, block_size);
     }
 
-    return ap6256_cyw43_status_to_errno(st);
+    result = ap6256_cyw43_status_to_errno(st);
+    ap6256_cyw43_port_record_cmd53(write ? 1U : 0U,
+                                   function,
+                                   block_mode,
+                                   block_size,
+                                   (uint32_t)len,
+                                   result,
+                                   buf);
+    return result;
 }
 
 void EXTI9_5_IRQHandler(void)
@@ -385,4 +495,259 @@ void EXTI9_5_IRQHandler(void)
         __HAL_GPIO_EXTI_CLEAR_IT(AP6256_CYW43_SDIO_DAT1_PIN);
         s_poll_pending = 1U;
     }
+}
+
+uint32_t ap6256_cyw43_port_sched_calls(void)
+{
+    return s_cyw43_sched_calls;
+}
+
+uintptr_t ap6256_cyw43_port_last_sched_func(void)
+{
+    return s_cyw43_last_sched_func;
+}
+
+uint32_t ap6256_cyw43_port_sdio_init_calls(void)
+{
+    return s_cyw43_sdio_init_calls;
+}
+
+uint32_t ap6256_cyw43_port_sdio_reinit_calls(void)
+{
+    return s_cyw43_sdio_reinit_calls;
+}
+
+void ap6256_cyw43_port_record_last_cmd(uint32_t cmd, uint32_t arg, int32_t status, uint32_t response)
+{
+    s_cyw43_last_cmd = cmd;
+    s_cyw43_last_cmd_arg = arg;
+    s_cyw43_last_cmd_status = status;
+    s_cyw43_last_cmd_response = response;
+}
+
+uint32_t ap6256_cyw43_port_last_cmd(void)
+{
+    return s_cyw43_last_cmd;
+}
+
+uint32_t ap6256_cyw43_port_last_cmd_arg(void)
+{
+    return s_cyw43_last_cmd_arg;
+}
+
+int32_t ap6256_cyw43_port_last_cmd_status(void)
+{
+    return s_cyw43_last_cmd_status;
+}
+
+uint32_t ap6256_cyw43_port_last_cmd_response(void)
+{
+    return s_cyw43_last_cmd_response;
+}
+
+void ap6256_cyw43_port_set_chip_id_raw(uint32_t value)
+{
+    s_cyw43_chip_id_raw = value;
+}
+
+uint32_t ap6256_cyw43_port_chip_id_raw(void)
+{
+    return s_cyw43_chip_id_raw;
+}
+
+void ap6256_cyw43_port_set_ram_size_bytes(uint32_t value)
+{
+    s_cyw43_ram_size_bytes = value;
+}
+
+void ap6256_cyw43_port_set_ram_base_addr(uint32_t value)
+{
+    s_cyw43_ram_base_addr = value;
+}
+
+uint32_t ap6256_cyw43_port_ram_base_addr(void)
+{
+    return s_cyw43_ram_base_addr;
+}
+
+uint32_t ap6256_cyw43_port_ram_size_bytes(void)
+{
+    return s_cyw43_ram_size_bytes;
+}
+
+void ap6256_cyw43_port_set_nvram_metrics(uint32_t packed_len,
+                                         uint32_t padded_len,
+                                         uint32_t footer_word,
+                                         uint8_t using_reference)
+{
+    s_cyw43_nvram_packed_len = packed_len;
+    s_cyw43_nvram_padded_len = padded_len;
+    s_cyw43_nvram_footer_word = footer_word;
+    s_cyw43_nvram_using_reference = using_reference;
+}
+
+uint32_t ap6256_cyw43_port_nvram_packed_len(void)
+{
+    return s_cyw43_nvram_packed_len;
+}
+
+uint32_t ap6256_cyw43_port_nvram_padded_len(void)
+{
+    return s_cyw43_nvram_padded_len;
+}
+
+uint32_t ap6256_cyw43_port_nvram_footer_word(void)
+{
+    return s_cyw43_nvram_footer_word;
+}
+
+uint8_t ap6256_cyw43_port_nvram_using_reference(void)
+{
+    return s_cyw43_nvram_using_reference;
+}
+
+void ap6256_cyw43_port_set_core_diag(uint8_t chip_clock_csr,
+                                     uint32_t sr_control1,
+                                     uint32_t wlan_ioctrl,
+                                     uint32_t wlan_resetctrl,
+                                     uint32_t socram_ioctrl,
+                                     uint32_t socram_resetctrl)
+{
+    s_cyw43_chip_clock_csr_diag = chip_clock_csr;
+    s_cyw43_sr_control1_diag = sr_control1;
+    s_cyw43_wlan_ioctrl_diag = wlan_ioctrl;
+    s_cyw43_wlan_resetctrl_diag = wlan_resetctrl;
+    s_cyw43_socram_ioctrl_diag = socram_ioctrl;
+    s_cyw43_socram_resetctrl_diag = socram_resetctrl;
+}
+
+uint8_t ap6256_cyw43_port_chip_clock_csr_diag(void)
+{
+    return s_cyw43_chip_clock_csr_diag;
+}
+
+uint32_t ap6256_cyw43_port_sr_control1_diag(void)
+{
+    return s_cyw43_sr_control1_diag;
+}
+
+uint32_t ap6256_cyw43_port_wlan_ioctrl_diag(void)
+{
+    return s_cyw43_wlan_ioctrl_diag;
+}
+
+uint32_t ap6256_cyw43_port_wlan_resetctrl_diag(void)
+{
+    return s_cyw43_wlan_resetctrl_diag;
+}
+
+uint32_t ap6256_cyw43_port_socram_ioctrl_diag(void)
+{
+    return s_cyw43_socram_ioctrl_diag;
+}
+
+uint32_t ap6256_cyw43_port_socram_resetctrl_diag(void)
+{
+    return s_cyw43_socram_resetctrl_diag;
+}
+
+void ap6256_cyw43_port_set_reference_nvram_enabled(uint8_t enable)
+{
+    s_cyw43_reference_nvram_enabled = (enable != 0U) ? 1U : 0U;
+}
+
+uint8_t ap6256_cyw43_port_reference_nvram_enabled(void)
+{
+    return s_cyw43_reference_nvram_enabled;
+}
+
+void ap6256_cyw43_port_set_last_bus_init_ret(int32_t value)
+{
+    s_cyw43_last_bus_init_ret = value;
+}
+
+int32_t ap6256_cyw43_port_last_bus_init_ret(void)
+{
+    return s_cyw43_last_bus_init_ret;
+}
+
+void ap6256_cyw43_port_set_bus_stage(uint32_t value)
+{
+    s_cyw43_bus_stage = value;
+}
+
+uint32_t ap6256_cyw43_port_bus_stage(void)
+{
+    return s_cyw43_bus_stage;
+}
+
+void ap6256_cyw43_port_set_poll_diag(int32_t header_read_status,
+                                     int32_t payload_read_status,
+                                     uint16_t hdr0,
+                                     uint16_t hdr1)
+{
+    s_cyw43_poll_header_read_status = header_read_status;
+    s_cyw43_poll_payload_read_status = payload_read_status;
+    s_cyw43_poll_hdr0 = hdr0;
+    s_cyw43_poll_hdr1 = hdr1;
+}
+
+int32_t ap6256_cyw43_port_poll_header_read_status(void)
+{
+    return s_cyw43_poll_header_read_status;
+}
+
+int32_t ap6256_cyw43_port_poll_payload_read_status(void)
+{
+    return s_cyw43_poll_payload_read_status;
+}
+
+uint16_t ap6256_cyw43_port_poll_hdr0(void)
+{
+    return s_cyw43_poll_hdr0;
+}
+
+uint16_t ap6256_cyw43_port_poll_hdr1(void)
+{
+    return s_cyw43_poll_hdr1;
+}
+
+uint8_t ap6256_cyw43_port_last_cmd53_write(void)
+{
+    return s_cyw43_last_cmd53_write;
+}
+
+uint8_t ap6256_cyw43_port_last_cmd53_function(void)
+{
+    return s_cyw43_last_cmd53_function;
+}
+
+uint8_t ap6256_cyw43_port_last_cmd53_block_mode(void)
+{
+    return s_cyw43_last_cmd53_block_mode;
+}
+
+uint32_t ap6256_cyw43_port_last_cmd53_block_size(void)
+{
+    return s_cyw43_last_cmd53_block_size;
+}
+
+uint32_t ap6256_cyw43_port_last_cmd53_length(void)
+{
+    return s_cyw43_last_cmd53_length;
+}
+
+int32_t ap6256_cyw43_port_last_cmd53_status(void)
+{
+    return s_cyw43_last_cmd53_status;
+}
+
+uint16_t ap6256_cyw43_port_last_cmd53_frame_size(void)
+{
+    return s_cyw43_last_cmd53_frame_size;
+}
+
+uint32_t ap6256_cyw43_port_last_cmd53_count(void)
+{
+    return s_cyw43_last_cmd53_count;
 }

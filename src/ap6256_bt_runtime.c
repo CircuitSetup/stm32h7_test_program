@@ -810,6 +810,13 @@ void ap6256_bt_runtime_poll(void)
     btstack_run_loop_embedded_execute_once();
 }
 
+void ap6256_bt_runtime_suspend(void)
+{
+    bt_runtime_disconnect(2000U);
+    bt_runtime_stop_stack();
+    ap6256_connectivity_set_bt_note("BTstack runtime suspended.");
+}
+
 uint8_t ap6256_bt_runtime_has_cached_selection(void)
 {
     return s_bt_runtime.cached_valid;

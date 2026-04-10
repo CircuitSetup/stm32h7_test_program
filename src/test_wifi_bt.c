@@ -66,6 +66,8 @@ void test_wifi_connect(board_test_result_t *result)
     memset(&summary, 0, sizeof(summary));
     memset(&diag, 0, sizeof(diag));
     memset(detail, 0, sizeof(detail));
+
+    test_uart_write_str("[ INFO ] wifi.connect stage: transport preflight\r\n");
     st = ap6256_connectivity_probe_wifi_transport(&diag);
     format_wifi_transport_summary(measured, sizeof(measured), st, &diag);
 
@@ -81,6 +83,7 @@ void test_wifi_connect(board_test_result_t *result)
         return;
     }
 
+    test_uart_write_str("[ INFO ] wifi.connect stage: runtime interactive start\r\n");
     st = ap6256_wifi_runtime_run_interactive(&summary, detail, sizeof(detail));
     (void)snprintf(measured,
                    sizeof(measured),

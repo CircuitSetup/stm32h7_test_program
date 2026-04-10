@@ -1,6 +1,7 @@
 #include "test_console.h"
 
 #include "board_test.h"
+#include "cmsis_os2.h"
 #include "main.h"
 #include "network_manager.h"
 #include "test_uart.h"
@@ -11,6 +12,18 @@
 #include <string.h>
 
 #define CONSOLE_LINE_MAX 160U
+
+static osMessageQueueId_t s_console_queue;
+static osThreadId_t s_console_exec_worker;
+static volatile uint8_t s_console_busy;
+
+static const osThreadAttr_t s_console_exec_attr = {
+    .name = "console_exec",
+    .priority = osPriorityLow,
+    .stack_size = 32768U
+};
+
+static void console_exec_worker(void *argument);
 
 static void print_prompt(void)
 {
@@ -263,6 +276,42 @@ static void handle_command(char *line)
     test_uart_write_str("Unknown command. Type 'help'.\r\n");
 }
 
+void test_console_init(void)
+{
+    if ((osKernelGetState() != osKernelRunning) && (osKernelGetState() != osKernelReady)) {
+        return;
+    }
+
+    if (s_console_queue == NULL) {
+        s_console_queue = osMessageQueueNew(2U, CONSOLE_LINE_MAX, NULL);
+    }
+
+    if ((s_console_exec_worker == NULL) && (s_console_queue != NULL)) {
+        s_console_exec_worker = osThreadNew(console_exec_worker, NULL, &s_console_exec_attr);
+    }
+
+    s_console_busy = 0U;
+}
+
+static void console_exec_worker(void *argument)
+{
+    char line[CONSOLE_LINE_MAX];
+
+    (void)argument;
+
+    for (;;) {
+        memset(line, 0, sizeof(line));
+        if ((s_console_queue == NULL) ||
+            (osMessageQueueGet(s_console_queue, line, NULL, osWaitForever) != osOK)) {
+            continue;
+        }
+
+        handle_command(line);
+        s_console_busy = 0U;
+        test_console_show_prompt();
+    }
+}
+
 void test_console_banner(void)
 {
     test_uart_printf("\r\n%s %s\r\n", FW_NAME, FW_VERSION);
@@ -283,12 +332,27 @@ void test_console_show_prompt(void)
 void test_console_poll(void)
 {
     char line[CONSOLE_LINE_MAX];
-    int n = test_uart_read_line(line, sizeof(line), 20U);
+    int n;
 
+    if (s_console_busy != 0U) {
+        return;
+    }
+
+    n = test_uart_read_line(line, sizeof(line), 20U);
     if (n <= 0) {
         return;
     }
 
-    handle_command(line);
-    test_console_show_prompt();
+    if ((s_console_queue == NULL) || (s_console_exec_worker == NULL)) {
+        handle_command(line);
+        test_console_show_prompt();
+        return;
+    }
+
+    s_console_busy = 1U;
+    if (osMessageQueuePut(s_console_queue, line, 0U, 0U) != osOK) {
+        s_console_busy = 0U;
+        test_uart_write_str("Console command queue is full. Try again.\r\n");
+        test_console_show_prompt();
+    }
 }

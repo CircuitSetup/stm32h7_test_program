@@ -19,6 +19,7 @@ typedef struct {
 
 uint8_t ap6256_bt_runtime_has_cached_selection(void);
 void ap6256_bt_runtime_poll(void);
+void ap6256_bt_runtime_suspend(void);
 ap6256_status_t ap6256_bt_runtime_run_interactive(ap6256_bt_runtime_summary_t *summary,
                                                   char *detail,
                                                   size_t detail_len);

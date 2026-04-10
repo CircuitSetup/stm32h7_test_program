@@ -1,6 +1,7 @@
 #include "ap6256_connectivity.h"
 
 #include "ap6256_bt_runtime.h"
+#include "ap6256_cyw43_compat.h"
 #include "ap6256_wifi_runtime.h"
 #include "network_manager.h"
 #include "test_uart.h"
@@ -9,7 +10,7 @@
 #include <string.h>
 
 static const char s_stack_note[] =
-    "AP6256 BCM43456 assets are embedded; CYW43-backed Wi-Fi and BTstack-backed Bluetooth runtimes are active.";
+    "AP6256 BCM43456 assets are embedded; Wi-Fi and Bluetooth workers start on demand under the radio owner.";
 static const char s_stack_blocker[] =
     "none";
 
@@ -44,6 +45,42 @@ static void ap6256_connectivity_copy_text(char *dst, size_t dst_len, const char 
     (void)snprintf(dst, dst_len, "%s", src);
 }
 
+static const char *ap6256_connectivity_wifi_stage_name(uint32_t stage)
+{
+    switch (stage) {
+    case 0U:
+        return "none";
+    case 1U:
+        return "start";
+    case 2U:
+        return "backplane_up";
+    case 3U:
+        return "backplane_ready";
+    case 4U:
+        return "alp_set";
+    case 5U:
+        return "fw_nvram";
+    case 6U:
+        return "ht_ready";
+    case 7U:
+        return "f2_ready";
+    case 8U:
+        return "clm_load";
+    case 9U:
+        return "txglom";
+    case 10U:
+        return "apsta";
+    case 101U:
+        return "poll_hdr";
+    case 102U:
+        return "poll_payload";
+    case 103U:
+        return "poll_parse";
+    default:
+        return "other";
+    }
+}
+
 static void ap6256_connectivity_set_wifi_error(const char *text)
 {
     ap6256_connectivity_copy_text(s_wifi_state.last_error,
@@ -70,6 +107,9 @@ void ap6256_connectivity_init(void)
     ap6256_connectivity_copy_text(s_bt_state.connection_state,
                                   sizeof(s_bt_state.connection_state),
                                   "idle");
+    s_wifi_state.runtime_ram_base_addr = AP6256_CYW43_RAM_BASE;
+    s_wifi_state.runtime_ram_size_bytes = AP6256_CYW43_RAM_SIZE_BYTES;
+    s_wifi_state.runtime_nvram_using_reference = (ap6256_wifi_runtime_reference_nvram_enabled() == 0U) ? 1U : 0U;
     ap6256_connectivity_set_wifi_error(s_stack_note);
     ap6256_connectivity_set_bt_error(s_stack_note);
 }
@@ -231,6 +271,38 @@ void ap6256_connectivity_set_wifi_ip(const char *ip,
     s_wifi_state.last_update_ms = HAL_GetTick();
 }
 
+void ap6256_connectivity_set_wifi_compat(uint32_t chip_id_raw,
+                                         uint32_t ram_base_addr,
+                                         uint32_t ram_size_bytes,
+                                         uint32_t nvram_packed_len,
+                                         uint32_t nvram_padded_len,
+                                         uint32_t nvram_footer_word,
+                                         uint8_t nvram_using_reference,
+                                         uint32_t bus_stage,
+                                         uint8_t chip_clock_csr,
+                                         uint32_t sr_control1,
+                                         uint32_t wlan_ioctrl,
+                                         uint32_t wlan_resetctrl,
+                                         uint32_t socram_ioctrl,
+                                         uint32_t socram_resetctrl)
+{
+    s_wifi_state.runtime_chip_id_raw = chip_id_raw;
+    s_wifi_state.runtime_ram_base_addr = ram_base_addr;
+    s_wifi_state.runtime_ram_size_bytes = ram_size_bytes;
+    s_wifi_state.runtime_nvram_packed_len = nvram_packed_len;
+    s_wifi_state.runtime_nvram_padded_len = nvram_padded_len;
+    s_wifi_state.runtime_nvram_footer_word = nvram_footer_word;
+    s_wifi_state.runtime_nvram_using_reference = nvram_using_reference;
+    s_wifi_state.runtime_bus_stage = bus_stage;
+    s_wifi_state.runtime_chip_clock_csr = chip_clock_csr;
+    s_wifi_state.runtime_sr_control1 = sr_control1;
+    s_wifi_state.runtime_wlan_ioctrl = wlan_ioctrl;
+    s_wifi_state.runtime_wlan_resetctrl = wlan_resetctrl;
+    s_wifi_state.runtime_socram_ioctrl = socram_ioctrl;
+    s_wifi_state.runtime_socram_resetctrl = socram_resetctrl;
+    s_wifi_state.last_update_ms = HAL_GetTick();
+}
+
 void ap6256_connectivity_set_bt_note(const char *text)
 {
     ap6256_connectivity_set_bt_error(text);
@@ -333,19 +405,39 @@ void ap6256_connectivity_print_wifi_info(void)
                      (state->leased_ip[0] != '\0') ? state->leased_ip : "n/a",
                      (state->leased_mask[0] != '\0') ? state->leased_mask : "n/a",
                      (state->leased_gateway[0] != '\0') ? state->leased_gateway : "n/a");
+    test_uart_printf("  CYW43 compat: chip=0x%04X rev=%u raw=0x%08lX rambase=0x%05lX ram=0x%05lX stage=%lu/%s nvram=%s %lu/%lu footer=0x%08lX\r\n",
+                     ap6256_cyw43_chip_id_from_raw(state->runtime_chip_id_raw),
+                     ap6256_cyw43_chip_rev_from_raw(state->runtime_chip_id_raw),
+                     (unsigned long)state->runtime_chip_id_raw,
+                     (unsigned long)state->runtime_ram_base_addr,
+                     (unsigned long)state->runtime_ram_size_bytes,
+                     (unsigned long)state->runtime_bus_stage,
+                     ap6256_connectivity_wifi_stage_name(state->runtime_bus_stage),
+                     (state->runtime_nvram_using_reference != 0U) ? "ap6256" : "generic",
+                     (unsigned long)state->runtime_nvram_packed_len,
+                     (unsigned long)state->runtime_nvram_padded_len,
+                     (unsigned long)state->runtime_nvram_footer_word);
+    test_uart_printf("  Core diag: clkcsr=0x%02X sr_ctl1=0x%08lX wlan_io=0x%08lX wlan_rst=0x%08lX socram_io=0x%08lX socram_rst=0x%08lX\r\n",
+                     state->runtime_chip_clock_csr,
+                     (unsigned long)state->runtime_sr_control1,
+                     (unsigned long)state->runtime_wlan_ioctrl,
+                     (unsigned long)state->runtime_wlan_resetctrl,
+                     (unsigned long)state->runtime_socram_ioctrl,
+                     (unsigned long)state->runtime_socram_resetctrl);
     test_uart_printf("  Cached session profile: %u\r\n",
                      ap6256_wifi_runtime_has_cached_profile());
     test_uart_printf("  Embedded assets ready: %u\r\n", state->assets_ready);
     ap6256_connectivity_print_asset_line("Wi-Fi FW", ap6256_assets_wifi_firmware());
     ap6256_connectivity_print_asset_line("Wi-Fi CLM", ap6256_assets_wifi_clm_blob());
-    ap6256_connectivity_print_asset_line("Wi-Fi NVRAM", ap6256_assets_wifi_nvram());
+    ap6256_connectivity_print_asset_line("Wi-Fi NVRAM (manual fallback)", ap6256_assets_wifi_nvram());
+    ap6256_connectivity_print_asset_line("Wi-Fi NVRAM (runtime default)", ap6256_assets_reference_nvram());
     test_uart_printf("  Radio owner: %s\r\n",
                      network_manager_owner_name(network_manager_get_owner()));
     test_uart_printf("  Full stack ready: %u\r\n",
                      ap6256_connectivity_full_stack_ready());
     test_uart_printf("  Connectivity note: %s\r\n",
                      (state->last_error[0] != '\0') ? state->last_error : s_stack_note);
-    test_uart_write_str("  Wi-Fi blocker: none (CYW43-backed Wi-Fi runtime is active).\r\n");
+    test_uart_write_str("  Wi-Fi blocker: none (Wi-Fi runtime starts only while WIFI owns the radio).\r\n");
 }
 
 void ap6256_connectivity_print_bt_info(void)
@@ -395,5 +487,5 @@ void ap6256_connectivity_print_bt_info(void)
                      ap6256_connectivity_full_stack_ready());
     test_uart_printf("  Connectivity note: %s\r\n",
                      (state->last_error[0] != '\0') ? state->last_error : s_stack_note);
-    test_uart_write_str("  BT blocker: none (BTstack-backed Bluetooth runtime is active).\r\n");
+    test_uart_write_str("  BT blocker: none (BTstack runtime starts only while BT owns the radio).\r\n");
 }

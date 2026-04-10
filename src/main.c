@@ -9,6 +9,8 @@
 #include "network_stack.h"
 #include "test_console.h"
 #include "test_uart.h"
+#include "FreeRTOS.h"
+#include "task.h"
 #include <string.h>
 
 UART_HandleTypeDef huart3;
@@ -21,14 +23,12 @@ volatile uint8_t g_clock_fallback_hsi = 0U;
 static void app_console_task(void *argument);
 static void app_ethernet_task(void *argument);
 static void app_network_manager_task(void *argument);
-static void app_wifi_task(void *argument);
-static void app_bt_task(void *argument);
 static void app_init_task(void *argument);
 
 static const osThreadAttr_t s_console_task_attr = {
     .name = "console_task",
     .priority = osPriorityLow,
-    .stack_size = 2048U
+    .stack_size = 6144U
 };
 
 static const osThreadAttr_t s_ethernet_task_attr = {
@@ -41,18 +41,6 @@ static const osThreadAttr_t s_network_manager_task_attr = {
     .name = "net_mgr_task",
     .priority = osPriorityBelowNormal,
     .stack_size = 1024U
-};
-
-static const osThreadAttr_t s_wifi_task_attr = {
-    .name = "wifi_task",
-    .priority = osPriorityBelowNormal,
-    .stack_size = 2048U
-};
-
-static const osThreadAttr_t s_bt_task_attr = {
-    .name = "bt_task",
-    .priority = osPriorityBelowNormal,
-    .stack_size = 2048U
 };
 
 static const osThreadAttr_t s_init_task_attr = {
@@ -449,26 +437,6 @@ static void app_network_manager_task(void *argument)
     }
 }
 
-static void app_wifi_task(void *argument)
-{
-    (void)argument;
-
-    for (;;) {
-        ap6256_wifi_runtime_poll();
-        osDelay(10U);
-    }
-}
-
-static void app_bt_task(void *argument)
-{
-    (void)argument;
-
-    for (;;) {
-        ap6256_bt_runtime_poll();
-        osDelay(1U);
-    }
-}
-
 static void app_init_task(void *argument)
 {
     (void)argument;
@@ -482,6 +450,7 @@ static void app_init_task(void *argument)
     network_ethernet_boot_start();
 
     board_test_init();
+    test_console_init();
     test_console_banner();
     test_uart_flush_rx();
 #if BOARD_AUTORUN_ON_BOOT
@@ -493,8 +462,6 @@ static void app_init_task(void *argument)
 
     (void)osThreadNew(app_network_manager_task, NULL, &s_network_manager_task_attr);
     (void)osThreadNew(app_ethernet_task, NULL, &s_ethernet_task_attr);
-    (void)osThreadNew(app_wifi_task, NULL, &s_wifi_task_attr);
-    (void)osThreadNew(app_bt_task, NULL, &s_bt_task_attr);
     (void)osThreadNew(app_console_task, NULL, &s_console_task_attr);
 
     osThreadExit();
@@ -526,4 +493,19 @@ void Error_Handler(void)
     while (1) {
         /* trap */
     }
+}
+
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+    const char *task_name = (pcTaskName != NULL) ? pcTaskName : "unknown";
+    (void)xTask;
+
+    test_uart_printf("\r\n[FATAL] FreeRTOS stack overflow in task '%s'\r\n", task_name);
+    Error_Handler();
+}
+
+void vApplicationMallocFailedHook(void)
+{
+    test_uart_write_str("\r\n[FATAL] FreeRTOS heap allocation failed\r\n");
+    Error_Handler();
 }

@@ -30,6 +30,20 @@ typedef struct {
     char leased_ip[16];
     char leased_mask[16];
     char leased_gateway[16];
+    uint32_t runtime_chip_id_raw;
+    uint32_t runtime_ram_base_addr;
+    uint32_t runtime_ram_size_bytes;
+    uint32_t runtime_nvram_packed_len;
+    uint32_t runtime_nvram_padded_len;
+    uint32_t runtime_nvram_footer_word;
+    uint32_t runtime_bus_stage;
+    uint32_t runtime_sr_control1;
+    uint32_t runtime_wlan_ioctrl;
+    uint32_t runtime_wlan_resetctrl;
+    uint32_t runtime_socram_ioctrl;
+    uint32_t runtime_socram_resetctrl;
+    uint8_t runtime_nvram_using_reference;
+    uint8_t runtime_chip_clock_csr;
     char last_error[96];
     uint32_t last_update_ms;
 } ap6256_wifi_state_t;
@@ -81,6 +95,20 @@ void ap6256_connectivity_set_wifi_ip(const char *ip,
                                      const char *mask,
                                      const char *gateway,
                                      uint8_t dhcp_bound);
+void ap6256_connectivity_set_wifi_compat(uint32_t chip_id_raw,
+                                         uint32_t ram_base_addr,
+                                         uint32_t ram_size_bytes,
+                                         uint32_t nvram_packed_len,
+                                         uint32_t nvram_padded_len,
+                                         uint32_t nvram_footer_word,
+                                         uint8_t nvram_using_reference,
+                                         uint32_t bus_stage,
+                                         uint8_t chip_clock_csr,
+                                         uint32_t sr_control1,
+                                         uint32_t wlan_ioctrl,
+                                         uint32_t wlan_resetctrl,
+                                         uint32_t socram_ioctrl,
+                                         uint32_t socram_resetctrl);
 
 void ap6256_connectivity_set_bt_note(const char *text);
 void ap6256_connectivity_set_bt_runtime(uint8_t stack_ready,

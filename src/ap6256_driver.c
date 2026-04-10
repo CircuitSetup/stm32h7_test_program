@@ -19,7 +19,7 @@
 #define AP6256_BT_EVENT_TIMEOUT    350U
 #define AP6256_CMD52_RETRIES       8U
 #define AP6256_SDIO_FUNC_READY_TIMEOUT 200U
-#define AP6256_SDIO_DATA_TIMEOUT_MS    250U
+#define AP6256_SDIO_DATA_TIMEOUT_MS    1000U
 
 #define AP6256_SDIO_CCCR_SDIO_REV  0x01U
 #define AP6256_SDIO_CCCR_IO_ENABLE 0x02U
@@ -65,7 +65,8 @@ static ap6256_status_t ap6256_sdio_cmd53_transfer(uint8_t write,
                                                   uint8_t *data,
                                                   uint32_t len,
                                                   uint8_t block_mode,
-                                                  uint8_t op_code);
+                                                  uint8_t op_code,
+                                                  uint32_t explicit_block_size);
 
 static uint8_t s_ap6256_sdio_open = 0U;
 static uint16_t s_ap6256_sdio_rca = 0U;
@@ -210,27 +211,52 @@ static uint32_t ap6256_sdmmc_block_size_code(uint32_t block_size)
     }
 }
 
+static uint8_t ap6256_is_power_of_two_u32(uint32_t value)
+{
+    return (value != 0U) && ((value & (value - 1U)) == 0U);
+}
+
+static uint32_t ap6256_round_up_pow2_u32(uint32_t value)
+{
+    uint32_t rounded = 1U;
+
+    if (value <= 1U) {
+        return 1U;
+    }
+
+    while ((rounded < value) && (rounded < 512U)) {
+        rounded <<= 1U;
+    }
+
+    return (rounded > 512U) ? 512U : rounded;
+}
+
 static ap6256_status_t ap6256_sdio_cmd53_transfer(uint8_t write,
                                                   uint8_t function,
                                                   uint32_t address,
                                                   uint8_t *data,
                                                   uint32_t len,
                                                   uint8_t block_mode,
-                                                  uint8_t op_code)
+                                                  uint8_t op_code,
+                                                  uint32_t explicit_block_size)
 {
     SDMMC_DataInitTypeDef data_cfg;
     uint32_t arg = 0U;
     uint32_t count = 0U;
     uint32_t block_size = 1U;
+    uint32_t host_block_size = 1U;
     uint32_t start = HAL_GetTick();
     uint32_t offset = 0U;
+    uint32_t dataremaining = 0U;
 
     if ((data == NULL) || (len == 0U) || (s_ap6256_sdio_open == 0U)) {
         return AP6256_STATUS_BAD_PARAM;
     }
 
     if (block_mode != 0U) {
-        if (function == 1U) {
+        if (explicit_block_size != 0U) {
+            block_size = explicit_block_size;
+        } else if (function == 1U) {
             block_size = AP6256_BCM_CONTROL_F1_BLOCK_SIZE;
         } else if (function == 2U) {
             block_size = AP6256_BCM_CONTROL_F2_BLOCK_SIZE;
@@ -242,23 +268,41 @@ static ap6256_status_t ap6256_sdio_cmd53_transfer(uint8_t write,
             return AP6256_STATUS_BAD_PARAM;
         }
         count = len / block_size;
+        host_block_size = block_size;
     } else {
         count = (len == 512U) ? 0U : len;
-        block_size = 1U;
+        if (explicit_block_size != 0U) {
+            block_size = explicit_block_size;
+        } else {
+            block_size = len;
+        }
+        /*
+         * In SDIO byte mode the command still carries the requested byte count,
+         * but the STM32 SDMMC data path must be configured as 1-byte blocks.
+         * ST's HAL SDIO implementation does the same for CMD53 byte-mode I/O.
+         */
+        host_block_size = 1U;
     }
 
     memset(&data_cfg, 0, sizeof(data_cfg));
     data_cfg.DataTimeOut = SDMMC_DATATIMEOUT;
     data_cfg.DataLength = len;
-    data_cfg.DataBlockSize = ap6256_sdmmc_block_size_code(block_size);
+    data_cfg.DataBlockSize = ap6256_sdmmc_block_size_code(host_block_size);
     data_cfg.TransferDir = (write != 0U) ? SDMMC_TRANSFER_DIR_TO_CARD : SDMMC_TRANSFER_DIR_TO_SDMMC;
-    data_cfg.TransferMode = SDMMC_TRANSFER_MODE_BLOCK;
-    data_cfg.DPSM = SDMMC_DPSM_ENABLE;
+    data_cfg.TransferMode = (block_mode != 0U) ? SDMMC_TRANSFER_MODE_BLOCK : SDMMC_TRANSFER_MODE_SDIO;
+    data_cfg.DPSM = SDMMC_DPSM_DISABLE;
+
+    /*
+     * CMD53 transfers are SDIO I/O operations, so keep SDIOEN asserted on the
+     * data path. ST's HAL preserves this bit across SDIO transfers.
+     */
+    SDMMC1->DCTRL = SDMMC_DCTRL_SDIOEN;
 
     SDMMC1->ICR = 0xFFFFFFFFU;
     if (SDMMC_ConfigData(SDMMC1, &data_cfg) != HAL_OK) {
         return AP6256_STATUS_IO_ERROR;
     }
+    __SDMMC_CMDTRANS_ENABLE(SDMMC1);
 
     arg |= ((uint32_t)(write != 0U) << 31U);
     arg |= ((uint32_t)function & 0x07U) << 28U;
@@ -268,52 +312,82 @@ static ap6256_status_t ap6256_sdio_cmd53_transfer(uint8_t write,
     arg |= (count & 0x1FFU);
 
     if (SDMMC_SDIO_CmdReadWriteExtended(SDMMC1, arg) != SDMMC_ERROR_NONE) {
+        __SDMMC_CMDTRANS_DISABLE(SDMMC1);
         SDMMC1->ICR = 0xFFFFFFFFU;
         return AP6256_STATUS_PROTOCOL_ERROR;
     }
 
+    dataremaining = len;
     while ((HAL_GetTick() - start) < AP6256_SDIO_DATA_TIMEOUT_MS) {
         uint32_t sta = SDMMC1->STA;
 
         if ((sta & (SDMMC_STA_DTIMEOUT | SDMMC_STA_DCRCFAIL | SDMMC_STA_RXOVERR | SDMMC_STA_TXUNDERR)) != 0U) {
+            __SDMMC_CMDTRANS_DISABLE(SDMMC1);
             SDMMC1->ICR = 0xFFFFFFFFU;
             return AP6256_STATUS_IO_ERROR;
         }
 
         if (write == 0U) {
-            while ((((SDMMC1->STA & SDMMC_STA_RXFIFOHF) != 0U) ||
-                    (((SDMMC1->STA & SDMMC_STA_DATAEND) != 0U) &&
-                     ((SDMMC1->STA & SDMMC_STA_RXFIFOE) == 0U))) &&
-                   (offset < len)) {
-                uint32_t word = SDMMC_ReadFIFO(SDMMC1);
-                uint32_t i;
+            if (((sta & SDMMC_STA_RXFIFOHF) != 0U) && (dataremaining >= 32U)) {
+                uint32_t reg_count;
 
-                for (i = 0U; (i < 4U) && (offset < len); ++i) {
-                    data[offset++] = (uint8_t)((word >> (8U * i)) & 0xFFU);
+                for (reg_count = 0U; reg_count < 8U; ++reg_count) {
+                    uint32_t word = SDMMC_ReadFIFO(SDMMC1);
+                    data[offset++] = (uint8_t)(word & 0xFFU);
+                    data[offset++] = (uint8_t)((word >> 8U) & 0xFFU);
+                    data[offset++] = (uint8_t)((word >> 16U) & 0xFFU);
+                    data[offset++] = (uint8_t)((word >> 24U) & 0xFFU);
+                }
+                dataremaining -= 32U;
+            } else if (dataremaining < 32U) {
+                while ((dataremaining > 0U) && ((SDMMC1->STA & SDMMC_STA_RXFIFOE) == 0U)) {
+                    uint32_t word = SDMMC_ReadFIFO(SDMMC1);
+                    uint32_t byte_count;
+
+                    for (byte_count = 0U; byte_count < 4U; ++byte_count) {
+                        if (dataremaining > 0U) {
+                            data[offset++] = (uint8_t)((word >> (byte_count * 8U)) & 0xFFU);
+                            dataremaining--;
+                        }
+                    }
                 }
             }
         } else {
-            while (((SDMMC1->STA & SDMMC_STA_TXFIFOHE) != 0U) && (offset < len)) {
-                uint32_t word = 0U;
-                uint32_t i;
+            if (((sta & SDMMC_STA_TXFIFOHE) != 0U) && (dataremaining >= 32U)) {
+                uint32_t reg_count;
 
-                for (i = 0U; (i < 4U) && (offset < len); ++i) {
-                    word |= ((uint32_t)data[offset++]) << (8U * i);
+                for (reg_count = 0U; reg_count < 8U; ++reg_count) {
+                    uint32_t word = ((uint32_t)data[offset + 0U]) |
+                                    ((uint32_t)data[offset + 1U] << 8U) |
+                                    ((uint32_t)data[offset + 2U] << 16U) |
+                                    ((uint32_t)data[offset + 3U] << 24U);
+                    SDMMC1->FIFO = word;
+                    offset += 4U;
                 }
+                dataremaining -= 32U;
+            } else if ((dataremaining < 32U) &&
+                       ((SDMMC1->STA & (SDMMC_STA_TXFIFOHE | SDMMC_STA_TXFIFOE)) != 0U)) {
+                while (dataremaining > 0U) {
+                    uint32_t word = 0U;
+                    uint32_t byte_count;
 
-                if (SDMMC_WriteFIFO(SDMMC1, &word) != HAL_OK) {
-                    SDMMC1->ICR = 0xFFFFFFFFU;
-                    return AP6256_STATUS_IO_ERROR;
+                    for (byte_count = 0U; (byte_count < 4U) && (dataremaining > 0U); ++byte_count) {
+                        word |= ((uint32_t)data[offset++]) << (byte_count << 3U);
+                        dataremaining--;
+                    }
+                    SDMMC1->FIFO = word;
                 }
             }
         }
 
-        if (((sta & SDMMC_STA_DATAEND) != 0U) && (offset >= len)) {
+        if ((sta & SDMMC_STA_DATAEND) != 0U) {
+            __SDMMC_CMDTRANS_DISABLE(SDMMC1);
             SDMMC1->ICR = 0xFFFFFFFFU;
             return AP6256_STATUS_OK;
         }
     }
 
+    __SDMMC_CMDTRANS_DISABLE(SDMMC1);
     SDMMC1->ICR = 0xFFFFFFFFU;
     return AP6256_STATUS_TIMEOUT;
 }
@@ -600,6 +674,37 @@ void ap6256_power_down(void)
     s_ap6256_bt_open = 0U;
 }
 
+ap6256_status_t ap6256_sdio_bus_prepare(uint8_t wl_on, uint8_t bt_on)
+{
+    ap6256_power_down();
+    HAL_Delay(20U);
+    ap6256_sdmmc1_prepare();
+    ap6256_set_enables((wl_on != 0U) ? 1U : 0U, (bt_on != 0U) ? 1U : 0U);
+    HAL_Delay(AP6256_POWER_SETTLE_MS);
+
+    if ((wl_on != 0U) &&
+        (HAL_GPIO_ReadPin(AP6256_WL_ENABLE_PORT, AP6256_WL_ENABLE_PIN) != GPIO_PIN_SET)) {
+        ap6256_power_down();
+        return AP6256_STATUS_IO_ERROR;
+    }
+
+    return AP6256_STATUS_OK;
+}
+
+void ap6256_sdio_session_adopt(uint16_t rca)
+{
+    if (rca == 0U) {
+        s_ap6256_sdio_open = 0U;
+        s_ap6256_sdio_rca = 0U;
+        s_ap6256_sb_window = 0xFFFFFFFFUL;
+        return;
+    }
+
+    s_ap6256_sdio_open = 1U;
+    s_ap6256_sdio_rca = rca;
+    s_ap6256_sb_window = 0xFFFFFFFFUL;
+}
+
 ap6256_status_t ap6256_sdio_open(ap6256_sdio_session_t *session, uint8_t wl_on, uint8_t bt_on)
 {
     uint32_t resp = 0U;
@@ -613,19 +718,13 @@ ap6256_status_t ap6256_sdio_open(ap6256_sdio_session_t *session, uint8_t wl_on, 
 
     memset(session, 0, sizeof(*session));
 
-    ap6256_power_down();
-    HAL_Delay(20U);
-    ap6256_sdmmc1_prepare();
-    ap6256_set_enables(1U, (bt_on != 0U) ? 1U : 0U);
-    HAL_Delay(AP6256_POWER_SETTLE_MS);
+    st = ap6256_sdio_bus_prepare(1U, (bt_on != 0U) ? 1U : 0U);
+    if (st != AP6256_STATUS_OK) {
+        return st;
+    }
 
     session->wl_reg_on = 1U;
     session->bt_reg_on = (bt_on != 0U) ? 1U : 0U;
-
-    if (HAL_GPIO_ReadPin(AP6256_WL_ENABLE_PORT, AP6256_WL_ENABLE_PIN) != GPIO_PIN_SET) {
-        ap6256_power_down();
-        return AP6256_STATUS_IO_ERROR;
-    }
 
     st = ap6256_sdmmc1_send_cmd(0U, 0U, SDMMC_RESP_NONE, 1U, NULL);
     if (st != AP6256_STATUS_OK) {
@@ -678,9 +777,7 @@ ap6256_status_t ap6256_sdio_open(ap6256_sdio_session_t *session, uint8_t wl_on, 
     }
 
     session->selected = 1U;
-    s_ap6256_sdio_open = 1U;
-    s_ap6256_sdio_rca = session->rca;
-    s_ap6256_sb_window = 0xFFFFFFFFUL;
+    ap6256_sdio_session_adopt(session->rca);
     return AP6256_STATUS_OK;
 }
 
@@ -706,7 +803,18 @@ ap6256_status_t ap6256_sdio_cmd53_read(uint8_t function,
                                        uint8_t block_mode,
                                        uint8_t op_code)
 {
-    return ap6256_sdio_cmd53_transfer(0U, function, address, data, len, block_mode, op_code);
+    return ap6256_sdio_cmd53_read_ex(function, address, data, len, block_mode, op_code, 0U);
+}
+
+ap6256_status_t ap6256_sdio_cmd53_read_ex(uint8_t function,
+                                          uint32_t address,
+                                          uint8_t *data,
+                                          uint32_t len,
+                                          uint8_t block_mode,
+                                          uint8_t op_code,
+                                          uint32_t block_size)
+{
+    return ap6256_sdio_cmd53_transfer(0U, function, address, data, len, block_mode, op_code, block_size);
 }
 
 ap6256_status_t ap6256_sdio_cmd53_write(uint8_t function,
@@ -716,7 +824,18 @@ ap6256_status_t ap6256_sdio_cmd53_write(uint8_t function,
                                         uint8_t block_mode,
                                         uint8_t op_code)
 {
-    return ap6256_sdio_cmd53_transfer(1U, function, address, (uint8_t *)data, len, block_mode, op_code);
+    return ap6256_sdio_cmd53_write_ex(function, address, data, len, block_mode, op_code, 0U);
+}
+
+ap6256_status_t ap6256_sdio_cmd53_write_ex(uint8_t function,
+                                           uint32_t address,
+                                           const uint8_t *data,
+                                           uint32_t len,
+                                           uint8_t block_mode,
+                                           uint8_t op_code,
+                                           uint32_t block_size)
+{
+    return ap6256_sdio_cmd53_transfer(1U, function, address, (uint8_t *)data, len, block_mode, op_code, block_size);
 }
 
 ap6256_status_t ap6256_sdio_enable_function(uint8_t function)
