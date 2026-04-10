@@ -42,6 +42,32 @@ void ap6256_cyw43_port_set_ram_size_bytes(uint32_t value);
 uint32_t ap6256_cyw43_port_ram_size_bytes(void);
 void ap6256_cyw43_port_set_ram_base_addr(uint32_t value);
 uint32_t ap6256_cyw43_port_ram_base_addr(void);
+void ap6256_cyw43_port_set_boot_mode(uint32_t value);
+uint32_t ap6256_cyw43_port_boot_mode(void);
+void ap6256_cyw43_port_set_boot_descriptor(uint32_t cpu_wrapper,
+                                           uint32_t ram_wrapper,
+                                           uint32_t firmware_addr,
+                                           uint32_t nvram_addr,
+                                           uint32_t footer_addr);
+void ap6256_cyw43_port_set_boot_topology(uint32_t cpu_core_id,
+                                         uint32_t ram_core_id,
+                                         uint32_t reset_vector_addr,
+                                         uint32_t reset_vector_value);
+uint32_t ap6256_cyw43_port_cpu_wrapper_addr(void);
+uint32_t ap6256_cyw43_port_ram_wrapper_addr(void);
+uint32_t ap6256_cyw43_port_firmware_addr(void);
+uint32_t ap6256_cyw43_port_nvram_addr(void);
+uint32_t ap6256_cyw43_port_footer_addr(void);
+uint32_t ap6256_cyw43_port_cpu_core_id(void);
+uint32_t ap6256_cyw43_port_ram_core_id(void);
+uint32_t ap6256_cyw43_port_reset_vector_addr(void);
+uint32_t ap6256_cyw43_port_reset_vector_value(void);
+void ap6256_cyw43_port_set_verify_mismatch(uint32_t address,
+                                           uint32_t expected,
+                                           uint32_t actual);
+uint32_t ap6256_cyw43_port_verify_mismatch_addr(void);
+uint32_t ap6256_cyw43_port_verify_expected(void);
+uint32_t ap6256_cyw43_port_verify_actual(void);
 void ap6256_cyw43_port_set_nvram_metrics(uint32_t packed_len,
                                          uint32_t padded_len,
                                          uint32_t footer_word,
@@ -62,6 +88,39 @@ uint32_t ap6256_cyw43_port_wlan_ioctrl_diag(void);
 uint32_t ap6256_cyw43_port_wlan_resetctrl_diag(void);
 uint32_t ap6256_cyw43_port_socram_ioctrl_diag(void);
 uint32_t ap6256_cyw43_port_socram_resetctrl_diag(void);
+void ap6256_cyw43_port_set_checkpoint(uint32_t checkpoint,
+                                      uint32_t checkpoint_result,
+                                      uint8_t function,
+                                      uint32_t address,
+                                      uint32_t write_value,
+                                      uint32_t readback_value,
+                                      int32_t status);
+uint32_t ap6256_cyw43_port_checkpoint(void);
+uint32_t ap6256_cyw43_port_checkpoint_result(void);
+uint32_t ap6256_cyw43_port_last_success_checkpoint(void);
+uint8_t ap6256_cyw43_port_checkpoint_function(void);
+uint32_t ap6256_cyw43_port_checkpoint_address(void);
+uint32_t ap6256_cyw43_port_checkpoint_write_value(void);
+uint32_t ap6256_cyw43_port_checkpoint_readback_value(void);
+int32_t ap6256_cyw43_port_checkpoint_status(void);
+void ap6256_cyw43_port_set_profile(uint32_t profile);
+uint32_t ap6256_cyw43_port_profile(void);
+void ap6256_cyw43_port_set_stage5_snapshot(uint8_t wakeup_ctrl,
+                                           uint8_t sleep_csr,
+                                           uint8_t cardcap,
+                                           uint8_t io_ready);
+uint8_t ap6256_cyw43_port_wakeup_ctrl_diag(void);
+uint8_t ap6256_cyw43_port_sleep_csr_diag(void);
+uint8_t ap6256_cyw43_port_cardcap_diag(void);
+uint8_t ap6256_cyw43_port_io_ready_diag(void);
+void ap6256_cyw43_port_record_backplane_access(uint8_t is_write,
+                                               uint32_t address,
+                                               uint8_t width_bytes,
+                                               int32_t status);
+uint8_t ap6256_cyw43_port_backplane_is_write(void);
+uint32_t ap6256_cyw43_port_backplane_address(void);
+uint8_t ap6256_cyw43_port_backplane_width_bytes(void);
+int32_t ap6256_cyw43_port_backplane_status(void);
 void ap6256_cyw43_port_set_reference_nvram_enabled(uint8_t enable);
 uint8_t ap6256_cyw43_port_reference_nvram_enabled(void);
 

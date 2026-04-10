@@ -33,6 +33,19 @@ typedef struct {
     uint32_t runtime_chip_id_raw;
     uint32_t runtime_ram_base_addr;
     uint32_t runtime_ram_size_bytes;
+    uint32_t runtime_boot_mode;
+    uint32_t runtime_cpu_wrapper_addr;
+    uint32_t runtime_ram_wrapper_addr;
+    uint32_t runtime_firmware_addr;
+    uint32_t runtime_nvram_addr;
+    uint32_t runtime_footer_addr;
+    uint32_t runtime_cpu_core_id;
+    uint32_t runtime_ram_core_id;
+    uint32_t runtime_reset_vector_addr;
+    uint32_t runtime_reset_vector_value;
+    uint32_t runtime_verify_mismatch_addr;
+    uint32_t runtime_verify_expected;
+    uint32_t runtime_verify_actual;
     uint32_t runtime_nvram_packed_len;
     uint32_t runtime_nvram_padded_len;
     uint32_t runtime_nvram_footer_word;
@@ -42,8 +55,25 @@ typedef struct {
     uint32_t runtime_wlan_resetctrl;
     uint32_t runtime_socram_ioctrl;
     uint32_t runtime_socram_resetctrl;
+    uint32_t runtime_profile;
+    uint32_t runtime_checkpoint;
+    uint32_t runtime_checkpoint_result;
+    uint32_t runtime_last_success_checkpoint;
+    uint8_t runtime_checkpoint_function;
+    uint32_t runtime_checkpoint_address;
+    uint32_t runtime_checkpoint_write_value;
+    uint32_t runtime_checkpoint_readback_value;
+    int32_t runtime_checkpoint_status;
     uint8_t runtime_nvram_using_reference;
     uint8_t runtime_chip_clock_csr;
+    uint8_t runtime_wakeup_ctrl;
+    uint8_t runtime_sleep_csr;
+    uint8_t runtime_cardcap;
+    uint8_t runtime_io_ready;
+    uint8_t runtime_backplane_is_write;
+    uint8_t runtime_backplane_width_bytes;
+    uint32_t runtime_backplane_address;
+    int32_t runtime_backplane_status;
     char last_error[96];
     uint32_t last_update_ms;
 } ap6256_wifi_state_t;
@@ -108,7 +138,37 @@ void ap6256_connectivity_set_wifi_compat(uint32_t chip_id_raw,
                                          uint32_t wlan_ioctrl,
                                          uint32_t wlan_resetctrl,
                                          uint32_t socram_ioctrl,
-                                         uint32_t socram_resetctrl);
+                                         uint32_t socram_resetctrl,
+                                         uint32_t profile,
+                                         uint32_t checkpoint,
+                                         uint32_t checkpoint_result,
+                                         uint32_t last_success_checkpoint,
+                                         uint8_t checkpoint_function,
+                                         uint32_t checkpoint_address,
+                                         uint32_t checkpoint_write_value,
+                                         uint32_t checkpoint_readback_value,
+                                         int32_t checkpoint_status,
+                                         uint8_t wakeup_ctrl,
+                                         uint8_t sleep_csr,
+                                         uint8_t cardcap,
+                                         uint8_t io_ready,
+                                         uint8_t backplane_is_write,
+                                         uint8_t backplane_width_bytes,
+                                         uint32_t backplane_address,
+                                         int32_t backplane_status);
+void ap6256_connectivity_set_wifi_boot_diag(uint32_t boot_mode,
+                                            uint32_t cpu_wrapper_addr,
+                                            uint32_t ram_wrapper_addr,
+                                            uint32_t firmware_addr,
+                                            uint32_t nvram_addr,
+                                            uint32_t footer_addr,
+                                            uint32_t cpu_core_id,
+                                            uint32_t ram_core_id,
+                                            uint32_t reset_vector_addr,
+                                            uint32_t reset_vector_value,
+                                            uint32_t verify_mismatch_addr,
+                                            uint32_t verify_expected,
+                                            uint32_t verify_actual);
 
 void ap6256_connectivity_set_bt_note(const char *text);
 void ap6256_connectivity_set_bt_runtime(uint8_t stack_ready,

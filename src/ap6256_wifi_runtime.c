@@ -49,6 +49,11 @@ typedef struct {
 
 static ap6256_wifi_runtime_state_t s_wifi_runtime;
 
+static const uint32_t s_wifi_runtime_profiles[] = {
+    AP6256_CYW43_PROFILE_BASELINE,
+    AP6256_CYW43_PROFILE_BASELINE_PLUS_TCM
+};
+
 static void ap6256_wifi_runtime_clear_scan_results(void)
 {
     memset(s_wifi_runtime.scan, 0, sizeof(s_wifi_runtime.scan));
@@ -294,6 +299,12 @@ static void ap6256_wifi_runtime_capture_profile(const ap6256_wifi_scan_entry_t *
                                          (entry->secure != 0U) ? 1U : 0U);
 }
 
+static void ap6256_wifi_runtime_reset_driver_state(void)
+{
+    cyw43_poll = NULL;
+    memset(&cyw43_state, 0, sizeof(cyw43_state));
+}
+
 static bool ap6256_wifi_runtime_wait_for_poll_ptr(uint32_t timeout_ms)
 {
     uint32_t start_ms = HAL_GetTick();
@@ -392,20 +403,43 @@ static void ap6256_wifi_runtime_publish_compat_diag(void)
                                         ap6256_cyw43_port_wlan_ioctrl_diag(),
                                         ap6256_cyw43_port_wlan_resetctrl_diag(),
                                         ap6256_cyw43_port_socram_ioctrl_diag(),
-                                        ap6256_cyw43_port_socram_resetctrl_diag());
+                                        ap6256_cyw43_port_socram_resetctrl_diag(),
+                                        ap6256_cyw43_port_profile(),
+                                        ap6256_cyw43_port_checkpoint(),
+                                        ap6256_cyw43_port_checkpoint_result(),
+                                        ap6256_cyw43_port_last_success_checkpoint(),
+                                        ap6256_cyw43_port_checkpoint_function(),
+                                        ap6256_cyw43_port_checkpoint_address(),
+                                        ap6256_cyw43_port_checkpoint_write_value(),
+                                        ap6256_cyw43_port_checkpoint_readback_value(),
+                                        ap6256_cyw43_port_checkpoint_status(),
+                                        ap6256_cyw43_port_wakeup_ctrl_diag(),
+                                        ap6256_cyw43_port_sleep_csr_diag(),
+                                        ap6256_cyw43_port_cardcap_diag(),
+                                        ap6256_cyw43_port_io_ready_diag(),
+                                        ap6256_cyw43_port_backplane_is_write(),
+                                        ap6256_cyw43_port_backplane_width_bytes(),
+                                        ap6256_cyw43_port_backplane_address(),
+                                        ap6256_cyw43_port_backplane_status());
+    ap6256_connectivity_set_wifi_boot_diag(ap6256_cyw43_port_boot_mode(),
+                                           ap6256_cyw43_port_cpu_wrapper_addr(),
+                                           ap6256_cyw43_port_ram_wrapper_addr(),
+                                           ap6256_cyw43_port_firmware_addr(),
+                                           ap6256_cyw43_port_nvram_addr(),
+                                           ap6256_cyw43_port_footer_addr(),
+                                           ap6256_cyw43_port_cpu_core_id(),
+                                           ap6256_cyw43_port_ram_core_id(),
+                                           ap6256_cyw43_port_reset_vector_addr(),
+                                           ap6256_cyw43_port_reset_vector_value(),
+                                           ap6256_cyw43_port_verify_mismatch_addr(),
+                                           ap6256_cyw43_port_verify_expected(),
+                                           ap6256_cyw43_port_verify_actual());
 }
 
-static bool ap6256_wifi_runtime_ensure_ready(char *detail, size_t detail_len)
+static void ap6256_wifi_runtime_seed_compat_diag(uint32_t profile)
 {
-    if (s_wifi_runtime.initialized != 0U) {
-        test_uart_write_str("[ INFO ] wifi.connect stage: runtime already initialized\r\n");
-        return true;
-    }
-
-    test_uart_write_str("[ INFO ] wifi.connect stage: cyw43 port init\r\n");
-    ap6256_cyw43_port_init();
     ap6256_connectivity_set_wifi_compat(0U,
-                                        AP6256_CYW43_RAM_BASE,
+                                        ap6256_cyw43_profile_ram_base(profile),
                                         AP6256_CYW43_RAM_SIZE_BYTES,
                                         0U,
                                         0U,
@@ -417,7 +451,75 @@ static bool ap6256_wifi_runtime_ensure_ready(char *detail, size_t detail_len)
                                         0U,
                                         0U,
                                         0U,
+                                        profile,
+                                        0U,
+                                        AP6256_CYW43_CP_RESULT_PENDING,
+                                        0U,
+                                        0U,
+                                        0U,
+                                        0U,
+                                        0U,
+                                        0U,
+                                        0U,
+                                        0U,
+                                        0U,
+                                        0U,
+                                        0U,
+                                        0U,
+                                        0U,
+                                        0U,
                                         0U);
+    ap6256_connectivity_set_wifi_boot_diag(ap6256_cyw43_profile_boot_mode(profile),
+                                           0U,
+                                           0U,
+                                           ap6256_cyw43_profile_ram_base(profile),
+                                           0U,
+                                           0U,
+                                           0U,
+                                           0U,
+                                           0U,
+                                           0U,
+                                           0U,
+                                           0U,
+                                           0U);
+}
+
+static void ap6256_wifi_runtime_format_bus_detail(char *detail, size_t detail_len)
+{
+    (void)snprintf(detail,
+                   detail_len,
+                   "CYW43 bus=%ld/%s st=%lu/%s boot=%s core=%s cp=%s res=%s pf=%s chip=%04X/r%u ram=%05lX nv=%s:%lu/%lu clk=%02X resetvec=%08lX fail=%08lX c53=%lu",
+                   (long)ap6256_cyw43_port_last_bus_init_ret(),
+                   ap6256_wifi_runtime_bus_init_ret_name(ap6256_cyw43_port_last_bus_init_ret()),
+                   (unsigned long)ap6256_cyw43_port_bus_stage(),
+                   ap6256_wifi_runtime_stage_name(ap6256_cyw43_port_bus_stage()),
+                   ap6256_cyw43_boot_mode_name(ap6256_cyw43_port_boot_mode()),
+                   ap6256_cyw43_core_name(ap6256_cyw43_port_cpu_core_id()),
+                   ap6256_cyw43_checkpoint_name(ap6256_cyw43_port_checkpoint()),
+                   ap6256_cyw43_checkpoint_result_name(ap6256_cyw43_port_checkpoint_result()),
+                   ap6256_cyw43_profile_name(ap6256_cyw43_port_profile()),
+                   ap6256_cyw43_chip_id_from_raw(ap6256_cyw43_port_chip_id_raw()),
+                   ap6256_cyw43_chip_rev_from_raw(ap6256_cyw43_port_chip_id_raw()),
+                   (unsigned long)ap6256_cyw43_port_ram_size_bytes(),
+                   ap6256_cyw43_port_nvram_using_reference() ? "ap6256" : "generic",
+                   (unsigned long)ap6256_cyw43_port_nvram_packed_len(),
+                   (unsigned long)ap6256_cyw43_port_nvram_padded_len(),
+                   (unsigned)ap6256_cyw43_port_chip_clock_csr_diag(),
+                   (unsigned long)ap6256_cyw43_port_reset_vector_value(),
+                   (unsigned long)ap6256_cyw43_port_verify_mismatch_addr(),
+                   (unsigned long)ap6256_cyw43_port_last_cmd53_count());
+}
+
+static bool ap6256_wifi_runtime_try_profile(uint32_t profile,
+                                            char *detail,
+                                            size_t detail_len)
+{
+    test_uart_printf("[ INFO ] wifi.connect stage: cyw43 port init (%s)\r\n",
+                     ap6256_cyw43_profile_name(profile));
+    ap6256_cyw43_port_init();
+    ap6256_cyw43_port_set_profile(profile);
+    ap6256_wifi_runtime_seed_compat_diag(profile);
+    ap6256_wifi_runtime_reset_driver_state();
 
     if (ap6256_assets_ready() == 0U) {
         (void)snprintf(detail,
@@ -435,36 +537,14 @@ static bool ap6256_wifi_runtime_ensure_ready(char *detail, size_t detail_len)
     cyw43_wifi_set_up(&cyw43_state, CYW43_ITF_STA, true, CYW43_COUNTRY_USA);
     test_uart_write_str("[ INFO ] wifi.connect stage: cyw43_wifi_set_up exit\r\n");
 
-    /* In this CYW43 driver, SDIO init and poll callback installation happen
-    during ensure_up(), not during cyw43_init(). */
     test_uart_write_str("[ INFO ] wifi.connect stage: wait poll ptr\r\n");
     if (!ap6256_wifi_runtime_wait_for_poll_ptr(1500U)) {
         ap6256_wifi_runtime_publish_compat_diag();
-        (void)snprintf(detail,
-               detail_len,
-               "CYW43 bus=%ld/%s st=%lu/%s chip=%04X/r%u ram=%05lX nv=%s:%lu/%lu clk=%02X wi=%02lX wr=%02lX si=%02lX sr=%02lX cmd=%lu/%08lX rsp=%02lX c53=%lu",
-               (long)ap6256_cyw43_port_last_bus_init_ret(),
-               ap6256_wifi_runtime_bus_init_ret_name(ap6256_cyw43_port_last_bus_init_ret()),
-               (unsigned long)ap6256_cyw43_port_bus_stage(),
-               ap6256_wifi_runtime_stage_name(ap6256_cyw43_port_bus_stage()),
-               ap6256_cyw43_chip_id_from_raw(ap6256_cyw43_port_chip_id_raw()),
-               ap6256_cyw43_chip_rev_from_raw(ap6256_cyw43_port_chip_id_raw()),
-               (unsigned long)ap6256_cyw43_port_ram_size_bytes(),
-               ap6256_cyw43_port_nvram_using_reference() ? "ap6256" : "generic",
-               (unsigned long)ap6256_cyw43_port_nvram_packed_len(),
-               (unsigned long)ap6256_cyw43_port_nvram_padded_len(),
-               (unsigned)ap6256_cyw43_port_chip_clock_csr_diag(),
-               (unsigned long)ap6256_cyw43_port_wlan_ioctrl_diag(),
-               (unsigned long)ap6256_cyw43_port_wlan_resetctrl_diag(),
-               (unsigned long)ap6256_cyw43_port_socram_ioctrl_diag(),
-               (unsigned long)ap6256_cyw43_port_socram_resetctrl_diag(),
-               (unsigned long)ap6256_cyw43_port_last_cmd(),
-               (unsigned long)ap6256_cyw43_port_last_cmd_arg(),
-               (unsigned long)ap6256_cyw43_port_last_cmd_response(),
-               (unsigned long)ap6256_cyw43_port_last_cmd53_count());
+        ap6256_wifi_runtime_format_bus_detail(detail, detail_len);
         ap6256_connectivity_set_wifi_note(detail);
         cyw43_deinit(&cyw43_state);
         ap6256_cyw43_port_deinit();
+        ap6256_wifi_runtime_reset_driver_state();
         return false;
     }
 
@@ -472,28 +552,59 @@ static bool ap6256_wifi_runtime_ensure_ready(char *detail, size_t detail_len)
     if (!ap6256_wifi_runtime_wait_for_sta_ready(1500U)) {
         ap6256_wifi_runtime_publish_compat_diag();
         (void)snprintf(detail,
-                    detail_len,
-                    "STA not ready: itf=0x%08lx poll=%p chip=%04X/r%u st=%lu/%s clk=%02X",
-                    (unsigned long)cyw43_state.itf_state,
-                    (void *)cyw43_poll,
-                    ap6256_cyw43_chip_id_from_raw(ap6256_cyw43_port_chip_id_raw()),
-                    ap6256_cyw43_chip_rev_from_raw(ap6256_cyw43_port_chip_id_raw()),
-                    (unsigned long)ap6256_cyw43_port_bus_stage(),
-                    ap6256_wifi_runtime_stage_name(ap6256_cyw43_port_bus_stage()),
-                    (unsigned)ap6256_cyw43_port_chip_clock_csr_diag());
+                       detail_len,
+                       "STA not ready: pf=%s itf=0x%08lx poll=%p chip=%04X/r%u st=%lu/%s clk=%02X",
+                       ap6256_cyw43_profile_name(ap6256_cyw43_port_profile()),
+                       (unsigned long)cyw43_state.itf_state,
+                       (void *)cyw43_poll,
+                       ap6256_cyw43_chip_id_from_raw(ap6256_cyw43_port_chip_id_raw()),
+                       ap6256_cyw43_chip_rev_from_raw(ap6256_cyw43_port_chip_id_raw()),
+                       (unsigned long)ap6256_cyw43_port_bus_stage(),
+                       ap6256_wifi_runtime_stage_name(ap6256_cyw43_port_bus_stage()),
+                       (unsigned)ap6256_cyw43_port_chip_clock_csr_diag());
         ap6256_connectivity_set_wifi_note(detail);
         cyw43_deinit(&cyw43_state);
         ap6256_cyw43_port_deinit();
+        ap6256_wifi_runtime_reset_driver_state();
         return false;
     }
 
-    test_uart_write_str("[ INFO ] wifi.connect stage: runtime ready\r\n");
-    ap6256_wifi_runtime_publish_compat_diag();
-    s_wifi_runtime.initialized = 1U;
-    s_wifi_runtime.stack_ready = 1U;
-    ap6256_connectivity_set_wifi_runtime(1U, 1U, s_wifi_runtime.last_scan_count, s_wifi_runtime.last_rssi);
-    ap6256_connectivity_set_wifi_note("BCM43456 CYW43 runtime ready.");
     return true;
+}
+
+static bool ap6256_wifi_runtime_ensure_ready(char *detail, size_t detail_len)
+{
+    uint32_t profile_index;
+
+    if (s_wifi_runtime.initialized != 0U) {
+        test_uart_write_str("[ INFO ] wifi.connect stage: runtime already initialized\r\n");
+        return true;
+    }
+
+    for (profile_index = 0U;
+         profile_index < (sizeof(s_wifi_runtime_profiles) / sizeof(s_wifi_runtime_profiles[0]));
+         ++profile_index) {
+        uint32_t profile = s_wifi_runtime_profiles[profile_index];
+
+        if (ap6256_wifi_runtime_try_profile(profile, detail, detail_len)) {
+            test_uart_printf("[ INFO ] wifi.connect stage: selected profile %s\r\n",
+                             ap6256_cyw43_profile_name(profile));
+            test_uart_write_str("[ INFO ] wifi.connect stage: runtime ready\r\n");
+            ap6256_wifi_runtime_publish_compat_diag();
+            s_wifi_runtime.initialized = 1U;
+            s_wifi_runtime.stack_ready = 1U;
+            ap6256_connectivity_set_wifi_runtime(1U, 1U, s_wifi_runtime.last_scan_count, s_wifi_runtime.last_rssi);
+            ap6256_connectivity_set_wifi_note("BCM43456 CYW43 runtime ready.");
+            return true;
+        }
+
+        test_uart_printf("[ INFO ] wifi.connect stage: profile %s failed\r\n",
+                         ap6256_cyw43_profile_name(profile));
+    }
+
+    ap6256_connectivity_set_wifi_note(detail);
+
+    return false;
 }
 
 static void ap6256_wifi_runtime_disconnect_current(void)

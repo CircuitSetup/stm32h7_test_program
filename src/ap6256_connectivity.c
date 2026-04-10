@@ -81,6 +81,11 @@ static const char *ap6256_connectivity_wifi_stage_name(uint32_t stage)
     }
 }
 
+static const char *ap6256_connectivity_checkpoint_result_name(uint32_t result)
+{
+    return ap6256_cyw43_checkpoint_result_name(result);
+}
+
 static void ap6256_connectivity_set_wifi_error(const char *text)
 {
     ap6256_connectivity_copy_text(s_wifi_state.last_error,
@@ -109,6 +114,8 @@ void ap6256_connectivity_init(void)
                                   "idle");
     s_wifi_state.runtime_ram_base_addr = AP6256_CYW43_RAM_BASE;
     s_wifi_state.runtime_ram_size_bytes = AP6256_CYW43_RAM_SIZE_BYTES;
+    s_wifi_state.runtime_boot_mode = AP6256_CYW43_BOOT_CM3_SOCRAM;
+    s_wifi_state.runtime_profile = AP6256_CYW43_PROFILE_BASELINE;
     s_wifi_state.runtime_nvram_using_reference = (ap6256_wifi_runtime_reference_nvram_enabled() == 0U) ? 1U : 0U;
     ap6256_connectivity_set_wifi_error(s_stack_note);
     ap6256_connectivity_set_bt_error(s_stack_note);
@@ -284,7 +291,24 @@ void ap6256_connectivity_set_wifi_compat(uint32_t chip_id_raw,
                                          uint32_t wlan_ioctrl,
                                          uint32_t wlan_resetctrl,
                                          uint32_t socram_ioctrl,
-                                         uint32_t socram_resetctrl)
+                                         uint32_t socram_resetctrl,
+                                         uint32_t profile,
+                                         uint32_t checkpoint,
+                                         uint32_t checkpoint_result,
+                                         uint32_t last_success_checkpoint,
+                                         uint8_t checkpoint_function,
+                                         uint32_t checkpoint_address,
+                                         uint32_t checkpoint_write_value,
+                                         uint32_t checkpoint_readback_value,
+                                         int32_t checkpoint_status,
+                                         uint8_t wakeup_ctrl,
+                                         uint8_t sleep_csr,
+                                         uint8_t cardcap,
+                                         uint8_t io_ready,
+                                         uint8_t backplane_is_write,
+                                         uint8_t backplane_width_bytes,
+                                         uint32_t backplane_address,
+                                         int32_t backplane_status)
 {
     s_wifi_state.runtime_chip_id_raw = chip_id_raw;
     s_wifi_state.runtime_ram_base_addr = ram_base_addr;
@@ -300,6 +324,53 @@ void ap6256_connectivity_set_wifi_compat(uint32_t chip_id_raw,
     s_wifi_state.runtime_wlan_resetctrl = wlan_resetctrl;
     s_wifi_state.runtime_socram_ioctrl = socram_ioctrl;
     s_wifi_state.runtime_socram_resetctrl = socram_resetctrl;
+    s_wifi_state.runtime_profile = profile;
+    s_wifi_state.runtime_checkpoint = checkpoint;
+    s_wifi_state.runtime_checkpoint_result = checkpoint_result;
+    s_wifi_state.runtime_last_success_checkpoint = last_success_checkpoint;
+    s_wifi_state.runtime_checkpoint_function = checkpoint_function;
+    s_wifi_state.runtime_checkpoint_address = checkpoint_address;
+    s_wifi_state.runtime_checkpoint_write_value = checkpoint_write_value;
+    s_wifi_state.runtime_checkpoint_readback_value = checkpoint_readback_value;
+    s_wifi_state.runtime_checkpoint_status = checkpoint_status;
+    s_wifi_state.runtime_wakeup_ctrl = wakeup_ctrl;
+    s_wifi_state.runtime_sleep_csr = sleep_csr;
+    s_wifi_state.runtime_cardcap = cardcap;
+    s_wifi_state.runtime_io_ready = io_ready;
+    s_wifi_state.runtime_backplane_is_write = backplane_is_write;
+    s_wifi_state.runtime_backplane_width_bytes = backplane_width_bytes;
+    s_wifi_state.runtime_backplane_address = backplane_address;
+    s_wifi_state.runtime_backplane_status = backplane_status;
+    s_wifi_state.last_update_ms = HAL_GetTick();
+}
+
+void ap6256_connectivity_set_wifi_boot_diag(uint32_t boot_mode,
+                                            uint32_t cpu_wrapper_addr,
+                                            uint32_t ram_wrapper_addr,
+                                            uint32_t firmware_addr,
+                                            uint32_t nvram_addr,
+                                            uint32_t footer_addr,
+                                            uint32_t cpu_core_id,
+                                            uint32_t ram_core_id,
+                                            uint32_t reset_vector_addr,
+                                            uint32_t reset_vector_value,
+                                            uint32_t verify_mismatch_addr,
+                                            uint32_t verify_expected,
+                                            uint32_t verify_actual)
+{
+    s_wifi_state.runtime_boot_mode = boot_mode;
+    s_wifi_state.runtime_cpu_wrapper_addr = cpu_wrapper_addr;
+    s_wifi_state.runtime_ram_wrapper_addr = ram_wrapper_addr;
+    s_wifi_state.runtime_firmware_addr = firmware_addr;
+    s_wifi_state.runtime_nvram_addr = nvram_addr;
+    s_wifi_state.runtime_footer_addr = footer_addr;
+    s_wifi_state.runtime_cpu_core_id = cpu_core_id;
+    s_wifi_state.runtime_ram_core_id = ram_core_id;
+    s_wifi_state.runtime_reset_vector_addr = reset_vector_addr;
+    s_wifi_state.runtime_reset_vector_value = reset_vector_value;
+    s_wifi_state.runtime_verify_mismatch_addr = verify_mismatch_addr;
+    s_wifi_state.runtime_verify_expected = verify_expected;
+    s_wifi_state.runtime_verify_actual = verify_actual;
     s_wifi_state.last_update_ms = HAL_GetTick();
 }
 
@@ -405,7 +476,7 @@ void ap6256_connectivity_print_wifi_info(void)
                      (state->leased_ip[0] != '\0') ? state->leased_ip : "n/a",
                      (state->leased_mask[0] != '\0') ? state->leased_mask : "n/a",
                      (state->leased_gateway[0] != '\0') ? state->leased_gateway : "n/a");
-    test_uart_printf("  CYW43 compat: chip=0x%04X rev=%u raw=0x%08lX rambase=0x%05lX ram=0x%05lX stage=%lu/%s nvram=%s %lu/%lu footer=0x%08lX\r\n",
+    test_uart_printf("  CYW43 compat: chip=0x%04X rev=%u raw=0x%08lX rambase=0x%05lX ram=0x%05lX stage=%lu/%s profile=%s nvram=%s %lu/%lu footer=0x%08lX\r\n",
                      ap6256_cyw43_chip_id_from_raw(state->runtime_chip_id_raw),
                      ap6256_cyw43_chip_rev_from_raw(state->runtime_chip_id_raw),
                      (unsigned long)state->runtime_chip_id_raw,
@@ -413,10 +484,28 @@ void ap6256_connectivity_print_wifi_info(void)
                      (unsigned long)state->runtime_ram_size_bytes,
                      (unsigned long)state->runtime_bus_stage,
                      ap6256_connectivity_wifi_stage_name(state->runtime_bus_stage),
+                     ap6256_cyw43_profile_name(state->runtime_profile),
                      (state->runtime_nvram_using_reference != 0U) ? "ap6256" : "generic",
                      (unsigned long)state->runtime_nvram_packed_len,
                      (unsigned long)state->runtime_nvram_padded_len,
                      (unsigned long)state->runtime_nvram_footer_word);
+    test_uart_printf("  Boot diag: boot=%s cpu=%s/0x%03lX wrap=0x%08lX ram=%s/0x%03lX wrap=0x%08lX fw=0x%08lX nv=0x%08lX foot=0x%08lX resetvec=0x%08lX->0x%08lX\r\n",
+                     ap6256_cyw43_boot_mode_name(state->runtime_boot_mode),
+                     ap6256_cyw43_core_name(state->runtime_cpu_core_id),
+                     (unsigned long)state->runtime_cpu_core_id,
+                     (unsigned long)state->runtime_cpu_wrapper_addr,
+                     ap6256_cyw43_core_name(state->runtime_ram_core_id),
+                     (unsigned long)state->runtime_ram_core_id,
+                     (unsigned long)state->runtime_ram_wrapper_addr,
+                     (unsigned long)state->runtime_firmware_addr,
+                     (unsigned long)state->runtime_nvram_addr,
+                     (unsigned long)state->runtime_footer_addr,
+                     (unsigned long)state->runtime_reset_vector_addr,
+                     (unsigned long)state->runtime_reset_vector_value);
+    test_uart_printf("  Verify diag: mismatch=0x%08lX exp=0x%08lX got=0x%08lX\r\n",
+                     (unsigned long)state->runtime_verify_mismatch_addr,
+                     (unsigned long)state->runtime_verify_expected,
+                     (unsigned long)state->runtime_verify_actual);
     test_uart_printf("  Core diag: clkcsr=0x%02X sr_ctl1=0x%08lX wlan_io=0x%08lX wlan_rst=0x%08lX socram_io=0x%08lX socram_rst=0x%08lX\r\n",
                      state->runtime_chip_clock_csr,
                      (unsigned long)state->runtime_sr_control1,
@@ -424,6 +513,24 @@ void ap6256_connectivity_print_wifi_info(void)
                      (unsigned long)state->runtime_wlan_resetctrl,
                      (unsigned long)state->runtime_socram_ioctrl,
                      (unsigned long)state->runtime_socram_resetctrl);
+    test_uart_printf("  Checkpoint: %s res=%s last_ok=%s fn=%u addr=0x%05lX wr=0x%08lX rd=0x%08lX st=%ld\r\n",
+                     ap6256_cyw43_checkpoint_name(state->runtime_checkpoint),
+                     ap6256_connectivity_checkpoint_result_name(state->runtime_checkpoint_result),
+                     ap6256_cyw43_checkpoint_name(state->runtime_last_success_checkpoint),
+                     state->runtime_checkpoint_function,
+                     (unsigned long)state->runtime_checkpoint_address,
+                     (unsigned long)state->runtime_checkpoint_write_value,
+                     (unsigned long)state->runtime_checkpoint_readback_value,
+                     (long)state->runtime_checkpoint_status);
+    test_uart_printf("  Stage5 diag: wake=0x%02X sleep=0x%02X cardcap=0x%02X iordy=0x%02X bp=%s addr=0x%05lX w=%u st=%ld\r\n",
+                     state->runtime_wakeup_ctrl,
+                     state->runtime_sleep_csr,
+                     state->runtime_cardcap,
+                     state->runtime_io_ready,
+                     (state->runtime_backplane_is_write != 0U) ? "wr" : "rd",
+                     (unsigned long)state->runtime_backplane_address,
+                     state->runtime_backplane_width_bytes,
+                     (long)state->runtime_backplane_status);
     test_uart_printf("  Cached session profile: %u\r\n",
                      ap6256_wifi_runtime_has_cached_profile());
     test_uart_printf("  Embedded assets ready: %u\r\n", state->assets_ready);
