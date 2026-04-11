@@ -263,12 +263,22 @@ static ap6256_status_t ap6256_sdio_cmd53_transfer(uint8_t write,
     uint32_t block_size = 1U;
     uint32_t host_block_size = 1U;
     uint32_t start = HAL_GetTick();
+    uint32_t timeout_ms = AP6256_SDIO_DATA_TIMEOUT_MS;
     uint32_t guard_loops = 0U;
     uint32_t offset = 0U;
     uint32_t dataremaining = 0U;
 
     if ((data == NULL) || (len == 0U) || (s_ap6256_sdio_open == 0U)) {
         return AP6256_STATUS_BAD_PARAM;
+    }
+
+    /*
+     * Keep F2 runtime packet I/O tightly bounded so scan/control wait paths
+     * cannot stall for long data timeouts when no packet is actually ready.
+     * Firmware download/control path on F1 keeps the conservative timeout.
+     */
+    if (function == 2U) {
+        timeout_ms = 120U;
     }
 
     if (block_mode != 0U) {
@@ -336,7 +346,7 @@ static ap6256_status_t ap6256_sdio_cmd53_transfer(uint8_t write,
     }
 
     dataremaining = len;
-    while ((HAL_GetTick() - start) < AP6256_SDIO_DATA_TIMEOUT_MS) {
+    while ((HAL_GetTick() - start) < timeout_ms) {
         uint32_t sta = SDMMC1->STA;
 
         if ((sta & (SDMMC_STA_DTIMEOUT | SDMMC_STA_DCRCFAIL | SDMMC_STA_RXOVERR | SDMMC_STA_TXUNDERR)) != 0U) {

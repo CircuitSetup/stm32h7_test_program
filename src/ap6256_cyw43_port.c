@@ -983,11 +983,6 @@ int cyw43_sdio_transfer(uint32_t cmd, uint32_t arg, uint32_t *resp)
         uint8_t function = (uint8_t)((arg >> 28U) & 0x07U);
         uint32_t address = (arg >> 9U) & 0x1FFFFU;
         uint8_t write = ((arg & 0x80000000UL) != 0U) ? 1U : 0U;
-        int32_t detail = (int32_t)(((uint32_t)function << 24U) |
-                                   ((uint32_t)write << 23U) |
-                                   (address & 0x1FFFFUL));
-
-        ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_CMD52, detail);
         if (write != 0U) {
             st = ap6256_sdio_cmd52_write_u8(function, address, (uint8_t)(arg & 0xFFU));
             if (st == AP6256_STATUS_OK) {
@@ -999,8 +994,14 @@ int cyw43_sdio_transfer(uint32_t cmd, uint32_t arg, uint32_t *resp)
                 local_resp = value;
             }
         }
-        ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_CMD52,
-                                            ap6256_cyw43_status_to_errno(st));
+        if (st != AP6256_STATUS_OK) {
+            int32_t detail = (int32_t)(((uint32_t)function << 24U) |
+                                       ((uint32_t)write << 23U) |
+                                       (address & 0x1FFFFUL));
+            ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_CMD52, detail);
+            ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_CMD52,
+                                                ap6256_cyw43_status_to_errno(st));
+        }
         break;
     }
     default:
@@ -1024,14 +1025,6 @@ int cyw43_sdio_transfer_cmd53(bool write, uint32_t block_size, uint32_t arg, siz
     uint8_t block_mode = (uint8_t)((arg >> 27U) & 0x01U);
     uint8_t op_code = (uint8_t)((arg >> 26U) & 0x01U);
     uint32_t address = (arg >> 9U) & 0x1FFFFU;
-    int32_t detail = (int32_t)(((uint32_t)function << 24U) |
-                               ((uint32_t)(write ? 1U : 0U) << 23U) |
-                               ((uint32_t)block_mode << 22U) |
-                               ((uint32_t)len & 0x003FFFFFUL));
-
-    ap6256_cyw43_port_record_breadcrumb(write ? AP6256_CYW43_BREADCRUMB_CMD53_WRITE
-                                              : AP6256_CYW43_BREADCRUMB_CMD53_READ,
-                                        detail);
     if (write) {
         st = ap6256_sdio_cmd53_write_ex(function, address, buf, (uint32_t)len, block_mode, op_code, block_size);
     } else {
@@ -1046,9 +1039,18 @@ int cyw43_sdio_transfer_cmd53(bool write, uint32_t block_size, uint32_t arg, siz
                                    (uint32_t)len,
                                    result,
                                    buf);
-    ap6256_cyw43_port_record_breadcrumb(write ? AP6256_CYW43_BREADCRUMB_CMD53_WRITE
-                                              : AP6256_CYW43_BREADCRUMB_CMD53_READ,
-                                        result);
+    if (result != 0) {
+        int32_t detail = (int32_t)(((uint32_t)function << 24U) |
+                                   ((uint32_t)(write ? 1U : 0U) << 23U) |
+                                   ((uint32_t)block_mode << 22U) |
+                                   ((uint32_t)len & 0x003FFFFFUL));
+        ap6256_cyw43_port_record_breadcrumb(write ? AP6256_CYW43_BREADCRUMB_CMD53_WRITE
+                                                  : AP6256_CYW43_BREADCRUMB_CMD53_READ,
+                                            detail);
+        ap6256_cyw43_port_record_breadcrumb(write ? AP6256_CYW43_BREADCRUMB_CMD53_WRITE
+                                                  : AP6256_CYW43_BREADCRUMB_CMD53_READ,
+                                            result);
+    }
     return result;
 }
 

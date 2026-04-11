@@ -38,11 +38,10 @@
 #define CYW43_EVENT_POLL_HOOK               do { ap6256_cyw43_port_wait_step(); } while (0)
 
 /*
- * Keep ioctl waits bounded so interactive manufacturing commands never sit in
- * a long control-response wait on boards that report escan results
- * asynchronously.
+ * Use a conservative timeout so scan-control ioctls have enough time to
+ * complete synchronously on AP6256/BCM43456 without forcing async acceptance.
  */
-#define CYW43_IOCTL_TIMEOUT_US              (900000U)
+#define CYW43_IOCTL_TIMEOUT_US              (2500000U)
 
 #define CYW43_HAL_PIN_MODE_INPUT            (0)
 #define CYW43_HAL_PIN_MODE_OUTPUT           (1)

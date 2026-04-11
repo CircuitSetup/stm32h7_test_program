@@ -257,6 +257,11 @@ static bool ap6256_wifi_runtime_wait_for_scan_complete(uint32_t timeout_ms)
     while (cyw43_wifi_scan_active(&cyw43_state)) {
         ap6256_cyw43_port_poll();
 
+        if ((ap6256_cyw43_port_poll_header_read_status() == -CYW43_ETIMEDOUT) ||
+            (ap6256_cyw43_port_poll_payload_read_status() == -CYW43_ETIMEDOUT)) {
+            return false;
+        }
+
         if ((HAL_GetTick() - start_ms) >= timeout_ms) {
             return false;
         }
