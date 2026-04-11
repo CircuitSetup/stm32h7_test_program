@@ -38,12 +38,11 @@
 #define CYW43_EVENT_POLL_HOOK               do { ap6256_cyw43_port_wait_step(); } while (0)
 
 /*
- * Broadcom DCMD responses can legitimately take longer than the upstream
- * MCU-default 500 ms when the BCM43456 firmware is starting a scan. Match the
- * common brcmfmac-class timeout so scan start failures separate real missing
- * responses from slow accepted commands.
+ * Keep ioctl waits bounded so interactive manufacturing commands never sit in
+ * a long control-response wait on boards that report escan results
+ * asynchronously.
  */
-#define CYW43_IOCTL_TIMEOUT_US              (2500000U)
+#define CYW43_IOCTL_TIMEOUT_US              (900000U)
 
 #define CYW43_HAL_PIN_MODE_INPUT            (0)
 #define CYW43_HAL_PIN_MODE_OUTPUT           (1)
