@@ -18,6 +18,8 @@ typedef struct {
 
 void ap6256_wifi_runtime_poll(void);
 void ap6256_wifi_runtime_suspend(void);
+void ap6256_wifi_runtime_set_poll_paused(uint8_t paused);
+uint8_t ap6256_wifi_runtime_poll_paused(void);
 uint8_t ap6256_wifi_runtime_has_cached_profile(void);
 void ap6256_wifi_runtime_set_reference_nvram(uint8_t enable);
 uint8_t ap6256_wifi_runtime_reference_nvram_enabled(void);

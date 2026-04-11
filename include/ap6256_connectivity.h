@@ -74,6 +74,26 @@ typedef struct {
     uint8_t runtime_backplane_width_bytes;
     uint32_t runtime_backplane_address;
     int32_t runtime_backplane_status;
+    uint8_t runtime_packet_pending;
+    uint8_t runtime_packet_pending_source;
+    uint8_t runtime_dat1_level;
+    uint8_t runtime_cccr_int_pending;
+    uint32_t runtime_f1_int_status;
+    int32_t runtime_packet_pending_status;
+    int32_t runtime_kso_status;
+    uint32_t runtime_ioctl_phase;
+    uint32_t runtime_ioctl_kind;
+    uint32_t runtime_ioctl_cmd;
+    uint32_t runtime_ioctl_iface;
+    uint32_t runtime_ioctl_len;
+    uint32_t runtime_ioctl_id;
+    int32_t runtime_ioctl_status;
+    int32_t runtime_ioctl_poll;
+    uint8_t runtime_send_flow_control;
+    uint8_t runtime_send_tx_seq;
+    uint8_t runtime_send_credit;
+    uint8_t runtime_send_synthetic_credit;
+    int32_t runtime_send_credit_status;
     char last_error[96];
     uint32_t last_update_ms;
 } ap6256_wifi_state_t;
@@ -169,6 +189,26 @@ void ap6256_connectivity_set_wifi_boot_diag(uint32_t boot_mode,
                                             uint32_t verify_mismatch_addr,
                                             uint32_t verify_expected,
                                             uint32_t verify_actual);
+void ap6256_connectivity_set_wifi_poll_diag(uint8_t packet_pending,
+                                            uint8_t packet_pending_source,
+                                            uint8_t dat1_level,
+                                            uint8_t cccr_int_pending,
+                                            uint32_t f1_int_status,
+                                            int32_t packet_pending_status,
+                                            int32_t kso_status,
+                                            uint32_t ioctl_phase,
+                                            uint32_t ioctl_kind,
+                                            uint32_t ioctl_cmd,
+                                            uint32_t ioctl_iface,
+                                            uint32_t ioctl_len,
+                                            uint32_t ioctl_id,
+                                            int32_t ioctl_status,
+                                            int32_t ioctl_poll,
+                                            uint8_t send_flow_control,
+                                            uint8_t send_tx_seq,
+                                            uint8_t send_credit,
+                                            uint8_t send_synthetic_credit,
+                                            int32_t send_credit_status);
 
 void ap6256_connectivity_set_bt_note(const char *text);
 void ap6256_connectivity_set_bt_runtime(uint8_t stack_ready,

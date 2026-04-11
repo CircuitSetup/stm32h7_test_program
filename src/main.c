@@ -2,6 +2,7 @@
 
 #include "board_test.h"
 #include "ap6256_bt_runtime.h"
+#include "ap6256_cyw43_port.h"
 #include "cmsis_os2.h"
 #include "ap6256_wifi_runtime.h"
 #include "network_ethernet.h"
@@ -24,6 +25,8 @@ static void app_console_task(void *argument);
 static void app_ethernet_task(void *argument);
 static void app_network_manager_task(void *argument);
 static void app_init_task(void *argument);
+static void app_print_wifi_breadcrumb(void);
+static uint32_t app_hash_string(const char *text);
 
 static const osThreadAttr_t s_console_task_attr = {
     .name = "console_task",
@@ -437,6 +440,46 @@ static void app_network_manager_task(void *argument)
     }
 }
 
+static void app_print_wifi_breadcrumb(void)
+{
+    char breadcrumb_reset_flags[64];
+    char boot_reset_flags[64];
+
+    ap6256_cyw43_port_format_reset_flags(ap6256_cyw43_port_breadcrumb_reset_flags(),
+                                         breadcrumb_reset_flags,
+                                         sizeof(breadcrumb_reset_flags));
+    ap6256_cyw43_port_format_reset_flags(ap6256_cyw43_port_boot_reset_flags(),
+                                         boot_reset_flags,
+                                         sizeof(boot_reset_flags));
+    test_uart_printf("Last Wi-Fi breadcrumb: valid=%u stage=%s/%lu detail=%ld tick=%lu boot_reset=%s(0x%08lX) crumb_reset=%s(0x%08lX)\r\n",
+                     ap6256_cyw43_port_breadcrumb_valid(),
+                     ap6256_cyw43_port_breadcrumb_name(ap6256_cyw43_port_breadcrumb_stage()),
+                     (unsigned long)ap6256_cyw43_port_breadcrumb_stage(),
+                     (long)ap6256_cyw43_port_breadcrumb_detail(),
+                     (unsigned long)ap6256_cyw43_port_breadcrumb_tick_ms(),
+                     boot_reset_flags,
+                     (unsigned long)ap6256_cyw43_port_boot_reset_flags(),
+                     breadcrumb_reset_flags,
+                     (unsigned long)ap6256_cyw43_port_breadcrumb_reset_flags());
+}
+
+static uint32_t app_hash_string(const char *text)
+{
+    uint32_t hash = 2166136261UL;
+
+    if (text == NULL) {
+        return 0U;
+    }
+
+    while (*text != '\0') {
+        hash ^= (uint8_t)(*text);
+        hash *= 16777619UL;
+        text++;
+    }
+
+    return hash;
+}
+
 static void app_init_task(void *argument)
 {
     (void)argument;
@@ -452,6 +495,7 @@ static void app_init_task(void *argument)
     board_test_init();
     test_console_init();
     test_console_banner();
+    app_print_wifi_breadcrumb();
     test_uart_flush_rx();
 #if BOARD_AUTORUN_ON_BOOT
     board_test_run_all();
@@ -470,6 +514,7 @@ static void app_init_task(void *argument)
 int main(void)
 {
     HAL_Init();
+    ap6256_cyw43_port_capture_boot_reset_flags(RCC->RSR);
     SystemClock_Config();
 
     MX_GPIO_Init();
@@ -500,12 +545,15 @@ void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
     const char *task_name = (pcTaskName != NULL) ? pcTaskName : "unknown";
     (void)xTask;
 
+    ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_STACK_OVERFLOW,
+                                        (int32_t)app_hash_string(task_name));
     test_uart_printf("\r\n[FATAL] FreeRTOS stack overflow in task '%s'\r\n", task_name);
     Error_Handler();
 }
 
 void vApplicationMallocFailedHook(void)
 {
+    ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_MALLOC_FAILED, 0);
     test_uart_write_str("\r\n[FATAL] FreeRTOS heap allocation failed\r\n");
     Error_Handler();
 }

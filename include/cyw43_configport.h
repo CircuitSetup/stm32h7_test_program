@@ -33,9 +33,17 @@
 #define CYW43_THREAD_EXIT                   ap6256_cyw43_thread_exit()
 #define CYW43_THREAD_LOCK_CHECK             do { } while (0)
 
-#define CYW43_SDPCM_SEND_COMMON_WAIT        do { osDelay(1U); } while (0)
-#define CYW43_DO_IOCTL_WAIT                 do { osDelay(1U); } while (0)
-#define CYW43_EVENT_POLL_HOOK               do { osDelay(1U); } while (0)
+#define CYW43_SDPCM_SEND_COMMON_WAIT        do { ap6256_cyw43_port_wait_step(); } while (0)
+#define CYW43_DO_IOCTL_WAIT                 do { ap6256_cyw43_port_wait_step(); } while (0)
+#define CYW43_EVENT_POLL_HOOK               do { ap6256_cyw43_port_wait_step(); } while (0)
+
+/*
+ * Broadcom DCMD responses can legitimately take longer than the upstream
+ * MCU-default 500 ms when the BCM43456 firmware is starting a scan. Match the
+ * common brcmfmac-class timeout so scan start failures separate real missing
+ * responses from slow accepted commands.
+ */
+#define CYW43_IOCTL_TIMEOUT_US              (2500000U)
 
 #define CYW43_HAL_PIN_MODE_INPUT            (0)
 #define CYW43_HAL_PIN_MODE_OUTPUT           (1)
@@ -58,5 +66,6 @@ void cyw43_schedule_internal_poll_dispatch(void (*func)(void));
 
 void ap6256_cyw43_thread_enter(void);
 void ap6256_cyw43_thread_exit(void);
+void ap6256_cyw43_port_wait_step(void);
 
 #endif /* CYW43_INCLUDED_CONFIGPORT_H */

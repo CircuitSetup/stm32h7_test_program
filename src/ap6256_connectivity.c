@@ -2,6 +2,7 @@
 
 #include "ap6256_bt_runtime.h"
 #include "ap6256_cyw43_compat.h"
+#include "ap6256_cyw43_port.h"
 #include "ap6256_wifi_runtime.h"
 #include "network_manager.h"
 #include "test_uart.h"
@@ -84,6 +85,52 @@ static const char *ap6256_connectivity_wifi_stage_name(uint32_t stage)
 static const char *ap6256_connectivity_checkpoint_result_name(uint32_t result)
 {
     return ap6256_cyw43_checkpoint_result_name(result);
+}
+
+static const char *ap6256_connectivity_packet_source_name(uint32_t source)
+{
+    switch (source) {
+    case AP6256_CYW43_PACKET_SRC_NONE:
+        return "none";
+    case AP6256_CYW43_PACKET_SRC_DAT1:
+        return "dat1";
+    case AP6256_CYW43_PACKET_SRC_CCCR_F2:
+        return "cccr_f2";
+    case AP6256_CYW43_PACKET_SRC_F1_MAILBOX:
+        return "f1_mbox";
+    case AP6256_CYW43_PACKET_SRC_ERROR:
+        return "error";
+    default:
+        return "unknown";
+    }
+}
+
+static const char *ap6256_connectivity_ioctl_phase_name(uint32_t phase)
+{
+    switch (phase) {
+    case AP6256_CYW43_IOCTL_PHASE_NONE:
+        return "none";
+    case AP6256_CYW43_IOCTL_PHASE_SCAN_WAKE:
+        return "scan_wake";
+    case AP6256_CYW43_IOCTL_PHASE_SEND_FAIL:
+        return "send_fail";
+    case AP6256_CYW43_IOCTL_PHASE_WAIT_NO_PACKET:
+        return "wait_no_packet";
+    case AP6256_CYW43_IOCTL_PHASE_WAIT_CMD53:
+        return "wait_cmd53";
+    case AP6256_CYW43_IOCTL_PHASE_WRONG_ID:
+        return "wrong_id";
+    case AP6256_CYW43_IOCTL_PHASE_MALFORMED:
+        return "malformed";
+    case AP6256_CYW43_IOCTL_PHASE_CONTROL_STATUS:
+        return "control_status";
+    case AP6256_CYW43_IOCTL_PHASE_OK:
+        return "ok";
+    case AP6256_CYW43_IOCTL_PHASE_SEND_CREDIT:
+        return "send_credit";
+    default:
+        return "unknown";
+    }
 }
 
 static void ap6256_connectivity_set_wifi_error(const char *text)
@@ -374,6 +421,50 @@ void ap6256_connectivity_set_wifi_boot_diag(uint32_t boot_mode,
     s_wifi_state.last_update_ms = HAL_GetTick();
 }
 
+void ap6256_connectivity_set_wifi_poll_diag(uint8_t packet_pending,
+                                            uint8_t packet_pending_source,
+                                            uint8_t dat1_level,
+                                            uint8_t cccr_int_pending,
+                                            uint32_t f1_int_status,
+                                            int32_t packet_pending_status,
+                                            int32_t kso_status,
+                                            uint32_t ioctl_phase,
+                                            uint32_t ioctl_kind,
+                                            uint32_t ioctl_cmd,
+                                            uint32_t ioctl_iface,
+                                            uint32_t ioctl_len,
+                                            uint32_t ioctl_id,
+                                            int32_t ioctl_status,
+                                            int32_t ioctl_poll,
+                                            uint8_t send_flow_control,
+                                            uint8_t send_tx_seq,
+                                            uint8_t send_credit,
+                                            uint8_t send_synthetic_credit,
+                                            int32_t send_credit_status)
+{
+    s_wifi_state.runtime_packet_pending = packet_pending;
+    s_wifi_state.runtime_packet_pending_source = packet_pending_source;
+    s_wifi_state.runtime_dat1_level = dat1_level;
+    s_wifi_state.runtime_cccr_int_pending = cccr_int_pending;
+    s_wifi_state.runtime_f1_int_status = f1_int_status;
+    s_wifi_state.runtime_packet_pending_status = packet_pending_status;
+    s_wifi_state.runtime_kso_status = kso_status;
+    s_wifi_state.runtime_ioctl_phase = ioctl_phase;
+    s_wifi_state.runtime_ioctl_kind = ioctl_kind;
+    s_wifi_state.runtime_ioctl_cmd = ioctl_cmd;
+    s_wifi_state.runtime_ioctl_iface = ioctl_iface;
+    s_wifi_state.runtime_ioctl_len = ioctl_len;
+    s_wifi_state.runtime_ioctl_id = ioctl_id;
+    s_wifi_state.runtime_ioctl_status = ioctl_status;
+    s_wifi_state.runtime_ioctl_poll = ioctl_poll;
+    s_wifi_state.runtime_send_flow_control = send_flow_control;
+    s_wifi_state.runtime_send_tx_seq = send_tx_seq;
+    s_wifi_state.runtime_send_credit = send_credit;
+    s_wifi_state.runtime_send_synthetic_credit = send_synthetic_credit;
+    s_wifi_state.runtime_send_credit_status = send_credit_status;
+    s_wifi_state.last_update_ms = HAL_GetTick();
+}
+
 void ap6256_connectivity_set_bt_note(const char *text)
 {
     ap6256_connectivity_set_bt_error(text);
@@ -434,6 +525,15 @@ const char *ap6256_connectivity_wifi_security_name(ap6256_wifi_security_t securi
 void ap6256_connectivity_print_wifi_info(void)
 {
     const ap6256_wifi_state_t *state = &s_wifi_state;
+    char breadcrumb_reset_flags[64];
+    char boot_reset_flags[64];
+
+    ap6256_cyw43_port_format_reset_flags(ap6256_cyw43_port_breadcrumb_reset_flags(),
+                                         breadcrumb_reset_flags,
+                                         sizeof(breadcrumb_reset_flags));
+    ap6256_cyw43_port_format_reset_flags(ap6256_cyw43_port_boot_reset_flags(),
+                                         boot_reset_flags,
+                                         sizeof(boot_reset_flags));
 
     test_uart_printf("Wi-Fi transport: %s (status=%s) OCR=0x%08lX CMD5_ready=%u tries=%u\r\n",
                      (state->transport_present != 0U) ? "detected" : "not detected",
@@ -531,6 +631,52 @@ void ap6256_connectivity_print_wifi_info(void)
                      (unsigned long)state->runtime_backplane_address,
                      state->runtime_backplane_width_bytes,
                      (long)state->runtime_backplane_status);
+    test_uart_printf("  Breadcrumb: valid=%u stage=%s/%lu detail=%ld tick=%lu boot_reset=%s(0x%08lX) crumb_reset=%s(0x%08lX) setup_rc=%ld\r\n",
+                     ap6256_cyw43_port_breadcrumb_valid(),
+                     ap6256_cyw43_port_breadcrumb_name(ap6256_cyw43_port_breadcrumb_stage()),
+                     (unsigned long)ap6256_cyw43_port_breadcrumb_stage(),
+                     (long)ap6256_cyw43_port_breadcrumb_detail(),
+                     (unsigned long)ap6256_cyw43_port_breadcrumb_tick_ms(),
+                     boot_reset_flags,
+                     (unsigned long)ap6256_cyw43_port_boot_reset_flags(),
+                     breadcrumb_reset_flags,
+                     (unsigned long)ap6256_cyw43_port_breadcrumb_reset_flags(),
+                     (long)ap6256_cyw43_port_setup_status());
+    test_uart_printf("  Poll diag: pend=%u src=%s dat1=%u irq=0x%02X f1int=0x%08lX pst=%ld kso=%ld ioctl=%s %lu/%lu if=%lu len=%lu id=%lu st=%ld poll=%ld\r\n",
+                     state->runtime_packet_pending,
+                     ap6256_connectivity_packet_source_name(state->runtime_packet_pending_source),
+                     state->runtime_dat1_level,
+                     state->runtime_cccr_int_pending,
+                     (unsigned long)state->runtime_f1_int_status,
+                     (long)state->runtime_packet_pending_status,
+                     (long)state->runtime_kso_status,
+                     ap6256_connectivity_ioctl_phase_name(state->runtime_ioctl_phase),
+                     (unsigned long)state->runtime_ioctl_kind,
+                     (unsigned long)state->runtime_ioctl_cmd,
+                     (unsigned long)state->runtime_ioctl_iface,
+                     (unsigned long)state->runtime_ioctl_len,
+                     (unsigned long)state->runtime_ioctl_id,
+                     (long)state->runtime_ioctl_status,
+                     (long)state->runtime_ioctl_poll);
+    test_uart_printf("  Send diag: flow=%u seq=%u credit=%u synth=%u st=%ld\r\n",
+                     state->runtime_send_flow_control,
+                     state->runtime_send_tx_seq,
+                     state->runtime_send_credit,
+                     state->runtime_send_synthetic_credit,
+                     (long)state->runtime_send_credit_status);
+    test_uart_printf("  SDIO diag: c53=%c/f%u/b%u/bs%lu/l%lu/st%ld/fr%u/n%lu c52=%lu/0x%08lX st=%ld rsp=0x%08lX\r\n",
+                     (ap6256_cyw43_port_last_cmd53_write() != 0U) ? 'w' : 'r',
+                     ap6256_cyw43_port_last_cmd53_function(),
+                     ap6256_cyw43_port_last_cmd53_block_mode(),
+                     (unsigned long)ap6256_cyw43_port_last_cmd53_block_size(),
+                     (unsigned long)ap6256_cyw43_port_last_cmd53_length(),
+                     (long)ap6256_cyw43_port_last_cmd53_status(),
+                     ap6256_cyw43_port_last_cmd53_frame_size(),
+                     (unsigned long)ap6256_cyw43_port_last_cmd53_count(),
+                     (unsigned long)ap6256_cyw43_port_last_cmd(),
+                     (unsigned long)ap6256_cyw43_port_last_cmd_arg(),
+                     (long)ap6256_cyw43_port_last_cmd_status(),
+                     (unsigned long)ap6256_cyw43_port_last_cmd_response());
     test_uart_printf("  Cached session profile: %u\r\n",
                      ap6256_wifi_runtime_has_cached_profile());
     test_uart_printf("  Embedded assets ready: %u\r\n", state->assets_ready);

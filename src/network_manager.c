@@ -14,6 +14,7 @@ static osMutexId_t s_network_mutex;
 static network_manager_stats_t s_network_stats;
 static osThreadId_t s_wifi_worker_thread;
 static osThreadId_t s_bt_worker_thread;
+static volatile uint8_t s_wifi_worker_in_poll;
 
 static const osThreadAttr_t s_wifi_worker_attr = {
     .name = "wifi_task",
@@ -32,7 +33,9 @@ static void network_manager_wifi_worker(void *argument)
     (void)argument;
 
     for (;;) {
+        s_wifi_worker_in_poll = 1U;
         ap6256_wifi_runtime_poll();
+        s_wifi_worker_in_poll = 0U;
         osDelay(10U);
     }
 }
@@ -77,12 +80,20 @@ static bool network_manager_start_bt_worker(void)
 
 static void network_manager_stop_wifi_worker(void)
 {
+    uint32_t start_ms;
+
     if (s_wifi_worker_thread == NULL) {
         return;
     }
 
+    start_ms = HAL_GetTick();
+    while ((s_wifi_worker_in_poll != 0U) && ((HAL_GetTick() - start_ms) < 250U)) {
+        osDelay(1U);
+    }
+
     (void)osThreadTerminate(s_wifi_worker_thread);
     s_wifi_worker_thread = NULL;
+    s_wifi_worker_in_poll = 0U;
 }
 
 static void network_manager_stop_bt_worker(void)
@@ -121,8 +132,11 @@ static bool network_manager_apply_owner(network_owner_t owner)
     }
 
     if ((previous_owner == NETWORK_OWNER_WIFI) && (owner != NETWORK_OWNER_WIFI)) {
-        ap6256_wifi_runtime_suspend();
+        ap6256_wifi_runtime_set_poll_paused(1U);
+        osDelay(20U);
         network_manager_stop_wifi_worker();
+        ap6256_wifi_runtime_suspend();
+        ap6256_wifi_runtime_set_poll_paused(0U);
     }
 
     if ((previous_owner == NETWORK_OWNER_BLUETOOTH) && (owner != NETWORK_OWNER_BLUETOOTH)) {
@@ -181,6 +195,7 @@ void network_manager_init(void)
     s_network_stats.owner = NETWORK_OWNER_IDLE;
     s_wifi_worker_thread = NULL;
     s_bt_worker_thread = NULL;
+    s_wifi_worker_in_poll = 0U;
     if ((osKernelGetState() == osKernelRunning) || (osKernelGetState() == osKernelReady)) {
         if (s_network_mutex == NULL) {
             s_network_mutex = osMutexNew(&mutex_attr);
@@ -264,7 +279,9 @@ void network_manager_print_info(void)
                      (unsigned long)s_network_stats.acquire_failures,
                      (unsigned long)s_network_stats.releases,
                      network_manager_console_uart_allowed() ? 1U : 0U);
-    test_uart_printf("  wifi_worker=%u bt_worker=%u\r\n",
+    test_uart_printf("  wifi_worker=%u wifi_poll_paused=%u wifi_in_poll=%u bt_worker=%u\r\n",
                      (s_wifi_worker_thread != NULL) ? 1U : 0U,
+                     ap6256_wifi_runtime_poll_paused(),
+                     s_wifi_worker_in_poll,
                      (s_bt_worker_thread != NULL) ? 1U : 0U);
 }

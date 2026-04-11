@@ -1,4 +1,5 @@
 #include "main.h"
+#include "ap6256_cyw43_port.h"
 #include "board_test.h"
 #include "FreeRTOS.h"
 #include "task.h"
@@ -11,24 +12,28 @@ void NMI_Handler(void)
 
 void HardFault_Handler(void)
 {
+    ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_HARDFAULT, 0);
     while (1) {
     }
 }
 
 void MemManage_Handler(void)
 {
+    ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_MEMMANAGE, 0);
     while (1) {
     }
 }
 
 void BusFault_Handler(void)
 {
+    ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_BUSFAULT, 0);
     while (1) {
     }
 }
 
 void UsageFault_Handler(void)
 {
+    ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_USAGEFAULT, 0);
     while (1) {
     }
 }

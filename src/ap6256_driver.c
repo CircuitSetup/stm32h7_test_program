@@ -20,6 +20,8 @@
 #define AP6256_CMD52_RETRIES       8U
 #define AP6256_SDIO_FUNC_READY_TIMEOUT 200U
 #define AP6256_SDIO_DATA_TIMEOUT_MS    1000U
+#define AP6256_SDIO_CMD_GUARD_LOOPS    2000000UL
+#define AP6256_SDIO_DATA_GUARD_LOOPS   8000000UL
 
 #define AP6256_SDIO_CCCR_SDIO_REV  0x01U
 #define AP6256_SDIO_CCCR_IO_ENABLE 0x02U
@@ -59,6 +61,7 @@ static ap6256_status_t ap6256_sdio_cmd52_write(uint8_t function, uint32_t addres
 static void ap6256_sdio_session_reset(void);
 static ap6256_status_t ap6256_bt_send_hci_cmd(const uint8_t *cmd, uint16_t len);
 static uint32_t ap6256_sdmmc_block_size_code(uint32_t block_size);
+static void ap6256_sdmmc1_abort_data_path(void);
 static ap6256_status_t ap6256_sdio_cmd53_transfer(uint8_t write,
                                                   uint8_t function,
                                                   uint32_t address,
@@ -86,6 +89,7 @@ static ap6256_status_t ap6256_sdmmc1_send_cmd(uint32_t cmd_idx,
                                               uint32_t *response)
 {
     uint32_t start = HAL_GetTick();
+    uint32_t guard_loops = 0U;
     uint32_t status;
     uint32_t cmd = SDMMC_CMD_CPSMEN | (cmd_idx & 0x3FU);
 
@@ -125,6 +129,11 @@ static ap6256_status_t ap6256_sdmmc1_send_cmd(uint32_t cmd_idx,
         }
 
         if ((HAL_GetTick() - start) > AP6256_SDIO_CMD_TIMEOUT) {
+            SDMMC1->ICR = 0xFFFFFFFFU;
+            return AP6256_STATUS_TIMEOUT;
+        }
+
+        if (++guard_loops > AP6256_SDIO_CMD_GUARD_LOOPS) {
             SDMMC1->ICR = 0xFFFFFFFFU;
             return AP6256_STATUS_TIMEOUT;
         }
@@ -211,6 +220,14 @@ static uint32_t ap6256_sdmmc_block_size_code(uint32_t block_size)
     }
 }
 
+static void ap6256_sdmmc1_abort_data_path(void)
+{
+    __SDMMC_CMDTRANS_DISABLE(SDMMC1);
+    SDMMC1->DCTRL = 0U;
+    SDMMC1->ICR = 0xFFFFFFFFU;
+    SDMMC1->DCTRL = SDMMC_DCTRL_SDIOEN;
+}
+
 static uint8_t ap6256_is_power_of_two_u32(uint32_t value)
 {
     return (value != 0U) && ((value & (value - 1U)) == 0U);
@@ -246,6 +263,7 @@ static ap6256_status_t ap6256_sdio_cmd53_transfer(uint8_t write,
     uint32_t block_size = 1U;
     uint32_t host_block_size = 1U;
     uint32_t start = HAL_GetTick();
+    uint32_t guard_loops = 0U;
     uint32_t offset = 0U;
     uint32_t dataremaining = 0U;
 
@@ -300,6 +318,7 @@ static ap6256_status_t ap6256_sdio_cmd53_transfer(uint8_t write,
 
     SDMMC1->ICR = 0xFFFFFFFFU;
     if (SDMMC_ConfigData(SDMMC1, &data_cfg) != HAL_OK) {
+        ap6256_sdmmc1_abort_data_path();
         return AP6256_STATUS_IO_ERROR;
     }
     __SDMMC_CMDTRANS_ENABLE(SDMMC1);
@@ -312,8 +331,7 @@ static ap6256_status_t ap6256_sdio_cmd53_transfer(uint8_t write,
     arg |= (count & 0x1FFU);
 
     if (SDMMC_SDIO_CmdReadWriteExtended(SDMMC1, arg) != SDMMC_ERROR_NONE) {
-        __SDMMC_CMDTRANS_DISABLE(SDMMC1);
-        SDMMC1->ICR = 0xFFFFFFFFU;
+        ap6256_sdmmc1_abort_data_path();
         return AP6256_STATUS_PROTOCOL_ERROR;
     }
 
@@ -322,8 +340,7 @@ static ap6256_status_t ap6256_sdio_cmd53_transfer(uint8_t write,
         uint32_t sta = SDMMC1->STA;
 
         if ((sta & (SDMMC_STA_DTIMEOUT | SDMMC_STA_DCRCFAIL | SDMMC_STA_RXOVERR | SDMMC_STA_TXUNDERR)) != 0U) {
-            __SDMMC_CMDTRANS_DISABLE(SDMMC1);
-            SDMMC1->ICR = 0xFFFFFFFFU;
+            ap6256_sdmmc1_abort_data_path();
             return AP6256_STATUS_IO_ERROR;
         }
 
@@ -381,14 +398,17 @@ static ap6256_status_t ap6256_sdio_cmd53_transfer(uint8_t write,
         }
 
         if ((sta & SDMMC_STA_DATAEND) != 0U) {
-            __SDMMC_CMDTRANS_DISABLE(SDMMC1);
-            SDMMC1->ICR = 0xFFFFFFFFU;
+            ap6256_sdmmc1_abort_data_path();
             return AP6256_STATUS_OK;
+        }
+
+        if (++guard_loops > AP6256_SDIO_DATA_GUARD_LOOPS) {
+            ap6256_sdmmc1_abort_data_path();
+            return AP6256_STATUS_TIMEOUT;
         }
     }
 
-    __SDMMC_CMDTRANS_DISABLE(SDMMC1);
-    SDMMC1->ICR = 0xFFFFFFFFU;
+    ap6256_sdmmc1_abort_data_path();
     return AP6256_STATUS_TIMEOUT;
 }
 

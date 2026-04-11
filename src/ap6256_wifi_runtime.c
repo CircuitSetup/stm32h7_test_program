@@ -36,6 +36,7 @@ typedef struct {
     uint8_t stack_ready;
     uint8_t link_up;
     uint8_t has_cached_profile;
+    volatile uint8_t poll_paused;
     uint8_t cached_secure;
     uint8_t last_scan_count;
     int16_t last_rssi;
@@ -49,10 +50,29 @@ typedef struct {
 
 static ap6256_wifi_runtime_state_t s_wifi_runtime;
 
+static const char *ap6256_wifi_runtime_packet_source_name(uint32_t source);
+
 static const uint32_t s_wifi_runtime_profiles[] = {
     AP6256_CYW43_PROFILE_BASELINE,
     AP6256_CYW43_PROFILE_BASELINE_PLUS_TCM
 };
+
+void ap6256_wifi_runtime_set_poll_paused(uint8_t paused)
+{
+    s_wifi_runtime.poll_paused = (paused != 0U) ? 1U : 0U;
+}
+
+uint8_t ap6256_wifi_runtime_poll_paused(void)
+{
+    return s_wifi_runtime.poll_paused;
+}
+
+static void ap6256_wifi_runtime_release_owner_with_breadcrumb(uint32_t stage, int32_t detail)
+{
+    ap6256_cyw43_port_record_breadcrumb(stage, detail);
+    network_manager_release(NETWORK_OWNER_WIFI);
+    ap6256_wifi_runtime_set_poll_paused(0U);
+}
 
 static void ap6256_wifi_runtime_clear_scan_results(void)
 {
@@ -113,7 +133,9 @@ static int ap6256_wifi_runtime_scan_cb(void *env, const cyw43_ev_scan_result_t *
     uint32_t insert_index = AP6256_WIFI_MAX_SCAN_RESULTS;
     (void)env;
 
-    if ((result == NULL) || (result->ssid_len == 0U)) {
+    if ((result == NULL) ||
+        (result->ssid_len == 0U) ||
+        (result->ssid_len >= sizeof(s_wifi_runtime.scan[0].ssid))) {
         return 0;
     }
 
@@ -229,12 +251,26 @@ static int ap6256_wifi_runtime_prompt_index(const char *prompt, uint32_t max_ind
 static bool ap6256_wifi_runtime_wait_for_scan_complete(uint32_t timeout_ms)
 {
     uint32_t start_ms = HAL_GetTick();
+    uint32_t last_diag_ms = start_ms;
 
+    ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_SCAN_WAIT, 0);
     while (cyw43_wifi_scan_active(&cyw43_state)) {
         ap6256_cyw43_port_poll();
 
         if ((HAL_GetTick() - start_ms) >= timeout_ms) {
             return false;
+        }
+        if ((HAL_GetTick() - last_diag_ms) >= 1000U) {
+            last_diag_ms = HAL_GetTick();
+            ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_SCAN_WAIT,
+                                                (int32_t)(last_diag_ms - start_ms));
+            test_uart_printf("[ INFO ] wifi.connect stage: scan wait %lums ev=%lu/%lu/%lu pend=%u src=%s\r\n",
+                             (unsigned long)(last_diag_ms - start_ms),
+                             (unsigned long)ap6256_cyw43_port_async_event_count(),
+                             (unsigned long)ap6256_cyw43_port_last_async_event_type(),
+                             (unsigned long)ap6256_cyw43_port_last_async_event_status(),
+                             ap6256_cyw43_port_packet_pending(),
+                             ap6256_wifi_runtime_packet_source_name(ap6256_cyw43_port_packet_pending_source()));
         }
         osDelay(20U);
     }
@@ -434,6 +470,26 @@ static void ap6256_wifi_runtime_publish_compat_diag(void)
                                            ap6256_cyw43_port_verify_mismatch_addr(),
                                            ap6256_cyw43_port_verify_expected(),
                                            ap6256_cyw43_port_verify_actual());
+    ap6256_connectivity_set_wifi_poll_diag(ap6256_cyw43_port_packet_pending(),
+                                           ap6256_cyw43_port_packet_pending_source(),
+                                           ap6256_cyw43_port_dat1_level(),
+                                           ap6256_cyw43_port_cccr_int_pending(),
+                                           ap6256_cyw43_port_f1_int_status(),
+                                           ap6256_cyw43_port_packet_pending_status(),
+                                           ap6256_cyw43_port_kso_status(),
+                                           ap6256_cyw43_port_last_ioctl_phase(),
+                                           ap6256_cyw43_port_last_ioctl_kind(),
+                                           ap6256_cyw43_port_last_ioctl_cmd(),
+                                           ap6256_cyw43_port_last_ioctl_iface(),
+                                           ap6256_cyw43_port_last_ioctl_len(),
+                                           ap6256_cyw43_port_last_ioctl_id(),
+                                           ap6256_cyw43_port_last_ioctl_status(),
+                                           ap6256_cyw43_port_last_ioctl_poll(),
+                                           ap6256_cyw43_port_send_flow_control(),
+                                           ap6256_cyw43_port_send_tx_seq(),
+                                           ap6256_cyw43_port_send_credit(),
+                                           ap6256_cyw43_port_send_synthetic_credit(),
+                                           ap6256_cyw43_port_send_credit_status());
 }
 
 static void ap6256_wifi_runtime_seed_compat_diag(uint32_t profile)
@@ -482,6 +538,130 @@ static void ap6256_wifi_runtime_seed_compat_diag(uint32_t profile)
                                            0U,
                                            0U,
                                            0U);
+    ap6256_connectivity_set_wifi_poll_diag(0U,
+                                           AP6256_CYW43_PACKET_SRC_NONE,
+                                           0U,
+                                           0U,
+                                           0U,
+                                           0,
+                                           0,
+                                           AP6256_CYW43_IOCTL_PHASE_NONE,
+                                           0U,
+                                           0U,
+                                           0U,
+                                           0U,
+                                           0U,
+                                           0,
+                                           0,
+                                           0U,
+                                           0U,
+                                           0U,
+                                           0U,
+                                           0);
+}
+
+static const char *ap6256_wifi_runtime_packet_source_name(uint32_t source)
+{
+    switch (source) {
+    case AP6256_CYW43_PACKET_SRC_NONE:
+        return "none";
+    case AP6256_CYW43_PACKET_SRC_DAT1:
+        return "dat1";
+    case AP6256_CYW43_PACKET_SRC_CCCR_F2:
+        return "cccr_f2";
+    case AP6256_CYW43_PACKET_SRC_F1_MAILBOX:
+        return "f1_mbox";
+    case AP6256_CYW43_PACKET_SRC_ERROR:
+        return "error";
+    default:
+        return "unknown";
+    }
+}
+
+static const char *ap6256_wifi_runtime_ioctl_phase_name(uint32_t phase)
+{
+    switch (phase) {
+    case AP6256_CYW43_IOCTL_PHASE_NONE:
+        return "none";
+    case AP6256_CYW43_IOCTL_PHASE_SCAN_WAKE:
+        return "scan_wake";
+    case AP6256_CYW43_IOCTL_PHASE_SEND_FAIL:
+        return "send_fail";
+    case AP6256_CYW43_IOCTL_PHASE_WAIT_NO_PACKET:
+        return "wait_no_packet";
+    case AP6256_CYW43_IOCTL_PHASE_WAIT_CMD53:
+        return "wait_cmd53";
+    case AP6256_CYW43_IOCTL_PHASE_WRONG_ID:
+        return "wrong_id";
+    case AP6256_CYW43_IOCTL_PHASE_MALFORMED:
+        return "malformed";
+    case AP6256_CYW43_IOCTL_PHASE_CONTROL_STATUS:
+        return "control_status";
+    case AP6256_CYW43_IOCTL_PHASE_OK:
+        return "ok";
+    case AP6256_CYW43_IOCTL_PHASE_SEND_CREDIT:
+        return "send_credit";
+    default:
+        return "unknown";
+    }
+}
+
+static const char *ap6256_wifi_runtime_scan_wake_step_name(uint32_t step)
+{
+    switch (step) {
+    case AP6256_CYW43_SCAN_WAKE_NONE:
+        return "none";
+    case AP6256_CYW43_SCAN_WAKE_WAKE_CTRL_READ:
+        return "wake_rd";
+    case AP6256_CYW43_SCAN_WAKE_WAKE_CTRL_WRITE:
+        return "wake_wr";
+    case AP6256_CYW43_SCAN_WAKE_KSO:
+        return "kso";
+    case AP6256_CYW43_SCAN_WAKE_SLEEP_VERIFY:
+        return "sleep";
+    case AP6256_CYW43_SCAN_WAKE_HT_VERIFY:
+        return "ht";
+    case AP6256_CYW43_SCAN_WAKE_IORDY_VERIFY:
+        return "iordy";
+    case AP6256_CYW43_SCAN_WAKE_OK:
+        return "ok";
+    default:
+        return "unknown";
+    }
+}
+
+static void ap6256_wifi_runtime_format_scan_start_detail(char *detail, size_t detail_len, int rc)
+{
+    (void)snprintf(detail,
+                   detail_len,
+                   "scan_start rc=%d bc=%s/%lu ph=%s sw=%s io=%lu/%lu id=%lu st=%ld p=%ld pend=%u src=%s irq=%02X f1=%08lX fc=%u/%u/%u syn=%u c53=%c/f%u/b%u/bs%lu/l%lu/st%ld/fr%u c52=%lu/%05lX",
+                   rc,
+                   ap6256_cyw43_port_breadcrumb_name(ap6256_cyw43_port_breadcrumb_stage()),
+                   (unsigned long)ap6256_cyw43_port_breadcrumb_stage(),
+                   ap6256_wifi_runtime_ioctl_phase_name(ap6256_cyw43_port_last_ioctl_phase()),
+                   ap6256_wifi_runtime_scan_wake_step_name(ap6256_cyw43_port_scan_wake_step()),
+                   (unsigned long)ap6256_cyw43_port_last_ioctl_kind(),
+                   (unsigned long)ap6256_cyw43_port_last_ioctl_cmd(),
+                   (unsigned long)ap6256_cyw43_port_last_ioctl_id(),
+                   (long)ap6256_cyw43_port_last_ioctl_status(),
+                   (long)ap6256_cyw43_port_last_ioctl_poll(),
+                   ap6256_cyw43_port_packet_pending(),
+                   ap6256_wifi_runtime_packet_source_name(ap6256_cyw43_port_packet_pending_source()),
+                   ap6256_cyw43_port_cccr_int_pending(),
+                   (unsigned long)ap6256_cyw43_port_f1_int_status(),
+                   ap6256_cyw43_port_send_flow_control(),
+                   ap6256_cyw43_port_send_tx_seq(),
+                   ap6256_cyw43_port_send_credit(),
+                   ap6256_cyw43_port_send_synthetic_credit(),
+                   (ap6256_cyw43_port_last_cmd53_write() != 0U) ? 'w' : 'r',
+                   ap6256_cyw43_port_last_cmd53_function(),
+                   ap6256_cyw43_port_last_cmd53_block_mode(),
+                   (unsigned long)ap6256_cyw43_port_last_cmd53_block_size(),
+                   (unsigned long)ap6256_cyw43_port_last_cmd53_length(),
+                   (long)ap6256_cyw43_port_last_cmd53_status(),
+                   ap6256_cyw43_port_last_cmd53_frame_size(),
+                   (unsigned long)ap6256_cyw43_port_last_cmd(),
+                   (unsigned long)((ap6256_cyw43_port_last_cmd_arg() >> 9U) & 0x1FFFFUL));
 }
 
 static void ap6256_wifi_runtime_format_bus_detail(char *detail, size_t detail_len)
@@ -536,6 +716,23 @@ static bool ap6256_wifi_runtime_try_profile(uint32_t profile,
     test_uart_write_str("[ INFO ] wifi.connect stage: cyw43_wifi_set_up enter\r\n");
     cyw43_wifi_set_up(&cyw43_state, CYW43_ITF_STA, true, CYW43_COUNTRY_USA);
     test_uart_write_str("[ INFO ] wifi.connect stage: cyw43_wifi_set_up exit\r\n");
+    if ((cyw43_state.itf_state & (1U << CYW43_ITF_STA)) == 0U) {
+        ap6256_wifi_runtime_publish_compat_diag();
+        (void)snprintf(detail,
+                       detail_len,
+                       "STA setup failed: setup_rc=%ld pf=%s itf=0x%08lx poll=%p bc=%s/%lu",
+                       (long)ap6256_cyw43_port_setup_status(),
+                       ap6256_cyw43_profile_name(ap6256_cyw43_port_profile()),
+                       (unsigned long)cyw43_state.itf_state,
+                       (void *)cyw43_poll,
+                       ap6256_cyw43_port_breadcrumb_name(ap6256_cyw43_port_breadcrumb_stage()),
+                       (unsigned long)ap6256_cyw43_port_breadcrumb_stage());
+        ap6256_connectivity_set_wifi_note(detail);
+        cyw43_deinit(&cyw43_state);
+        ap6256_cyw43_port_deinit();
+        ap6256_wifi_runtime_reset_driver_state();
+        return false;
+    }
 
     test_uart_write_str("[ INFO ] wifi.connect stage: wait poll ptr\r\n");
     if (!ap6256_wifi_runtime_wait_for_poll_ptr(1500U)) {
@@ -609,7 +806,7 @@ static bool ap6256_wifi_runtime_ensure_ready(char *detail, size_t detail_len)
 
 static void ap6256_wifi_runtime_disconnect_current(void)
 {
-    if (s_wifi_runtime.initialized == 0U) {
+    if ((s_wifi_runtime.initialized == 0U) || (s_wifi_runtime.poll_paused != 0U)) {
         return;
     }
 
@@ -731,6 +928,8 @@ void ap6256_wifi_runtime_poll(void)
 
 void ap6256_wifi_runtime_suspend(void)
 {
+    ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_SUSPEND,
+                                        s_wifi_runtime.initialized);
     if (s_wifi_runtime.initialized == 0U) {
         ap6256_connectivity_set_wifi_runtime(1U, 0U, s_wifi_runtime.last_scan_count, s_wifi_runtime.last_rssi);
         return;
@@ -783,50 +982,83 @@ ap6256_status_t ap6256_wifi_runtime_run_interactive(ap6256_wifi_runtime_summary_
     }
 
     test_uart_write_str("[ INFO ] wifi.connect stage: acquired wifi owner\r\n");
+    ap6256_wifi_runtime_set_poll_paused(1U);
     memset(password, 0, sizeof(password));
     if (!ap6256_wifi_runtime_ensure_ready(detail, detail_len)) {
-        network_manager_release(NETWORK_OWNER_WIFI);
+        ap6256_wifi_runtime_release_owner_with_breadcrumb(AP6256_CYW43_BREADCRUMB_RELEASE, AP6256_STATUS_IO_ERROR);
         return AP6256_STATUS_IO_ERROR;
     }
 
     test_uart_write_str("[ INFO ] wifi.connect stage: start scan\r\n");
+    ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_SCAN_START, 0);
     ap6256_wifi_runtime_clear_scan_results();
     memset(&opts, 0, sizeof(opts));
     opts.scan_type = 0;
     rc = cyw43_wifi_scan(&cyw43_state, &opts, NULL, ap6256_wifi_runtime_scan_cb);
     if (rc != 0) {
-        (void)snprintf(detail, detail_len, "Wi-Fi scan start failed (rc=%d).", rc);
+        cyw43_state.wifi_scan_state = 0;
+        cyw43_state.wifi_scan_cb = NULL;
+        cyw43_state.wifi_scan_env = NULL;
+        ap6256_wifi_runtime_publish_compat_diag();
+        ap6256_wifi_runtime_format_scan_start_detail(detail, detail_len, rc);
         ap6256_connectivity_set_wifi_note(detail);
-        network_manager_release(NETWORK_OWNER_WIFI);
+        ap6256_wifi_runtime_release_owner_with_breadcrumb(AP6256_CYW43_BREADCRUMB_RELEASE, rc);
         return AP6256_STATUS_IO_ERROR;
     }
+    ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_SCAN_ACCEPTED, 0);
 
     if (!ap6256_wifi_runtime_wait_for_scan_complete(AP6256_WIFI_SCAN_TIMEOUT_MS)) {
-        (void)snprintf(detail, detail_len, "Wi-Fi scan timed out after %lu ms.", (unsigned long)AP6256_WIFI_SCAN_TIMEOUT_MS);
+        ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_SCAN_TIMEOUT,
+                                            (int32_t)AP6256_WIFI_SCAN_TIMEOUT_MS);
+        cyw43_state.wifi_scan_state = 0;
+        cyw43_state.wifi_scan_cb = NULL;
+        cyw43_state.wifi_scan_env = NULL;
+        ap6256_wifi_runtime_publish_compat_diag();
+        (void)snprintf(detail,
+                       detail_len,
+                       "scan_timeout %lums state=%u ev=%lu/%lu/%lu ph=%s pend=%u src=%s irq=%02X f1=%08lX poll=%ld/%ld hdr=%04X/%04X",
+                       (unsigned long)AP6256_WIFI_SCAN_TIMEOUT_MS,
+                       (unsigned)cyw43_state.wifi_scan_state,
+                       (unsigned long)ap6256_cyw43_port_async_event_count(),
+                       (unsigned long)ap6256_cyw43_port_last_async_event_type(),
+                       (unsigned long)ap6256_cyw43_port_last_async_event_status(),
+                       ap6256_wifi_runtime_ioctl_phase_name(ap6256_cyw43_port_last_ioctl_phase()),
+                       ap6256_cyw43_port_packet_pending(),
+                       ap6256_wifi_runtime_packet_source_name(ap6256_cyw43_port_packet_pending_source()),
+                       ap6256_cyw43_port_cccr_int_pending(),
+                       (unsigned long)ap6256_cyw43_port_f1_int_status(),
+                       (long)ap6256_cyw43_port_poll_header_read_status(),
+                       (long)ap6256_cyw43_port_poll_payload_read_status(),
+                       ap6256_cyw43_port_poll_hdr0(),
+                       ap6256_cyw43_port_poll_hdr1());
         ap6256_connectivity_set_wifi_note(detail);
-        network_manager_release(NETWORK_OWNER_WIFI);
+        ap6256_wifi_runtime_release_owner_with_breadcrumb(AP6256_CYW43_BREADCRUMB_RELEASE, AP6256_STATUS_TIMEOUT);
         return AP6256_STATUS_TIMEOUT;
     }
 
     test_uart_write_str("[ INFO ] wifi.connect stage: scan complete\r\n");
     ap6256_wifi_runtime_sort_scan_results();
+    ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_SCAN_COMPLETE,
+                                        s_wifi_runtime.last_scan_count);
     ap6256_connectivity_set_wifi_runtime(1U, 1U, s_wifi_runtime.last_scan_count, s_wifi_runtime.last_rssi);
 
     if (s_wifi_runtime.last_scan_count == 0U) {
         (void)snprintf(detail, detail_len, "No Wi-Fi access points were found during the scan window.");
         ap6256_connectivity_set_wifi_note(detail);
-        network_manager_release(NETWORK_OWNER_WIFI);
+        ap6256_wifi_runtime_release_owner_with_breadcrumb(AP6256_CYW43_BREADCRUMB_RELEASE, AP6256_STATUS_TIMEOUT);
         return AP6256_STATUS_TIMEOUT;
     }
 
     test_uart_write_str("[ INFO ] wifi.connect stage: prompt ssid selection\r\n");
+    ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_PROMPT_SSID,
+                                        s_wifi_runtime.last_scan_count);
     ap6256_wifi_runtime_print_scan_results();
     scan_index = ap6256_wifi_runtime_prompt_index("Select Wi-Fi network number: ",
                                                   s_wifi_runtime.last_scan_count);
     if (scan_index < 0) {
         (void)snprintf(detail, detail_len, "Wi-Fi network selection timed out or was invalid.");
         ap6256_connectivity_set_wifi_note(detail);
-        network_manager_release(NETWORK_OWNER_WIFI);
+        ap6256_wifi_runtime_release_owner_with_breadcrumb(AP6256_CYW43_BREADCRUMB_RELEASE, AP6256_STATUS_BAD_PARAM);
         return AP6256_STATUS_BAD_PARAM;
     }
 
@@ -838,7 +1070,7 @@ ap6256_status_t ap6256_wifi_runtime_run_interactive(ap6256_wifi_runtime_summary_
                        selected->ssid,
                        ap6256_wifi_runtime_security_name(selected->auth_mode));
         ap6256_connectivity_set_wifi_note(detail);
-        network_manager_release(NETWORK_OWNER_WIFI);
+        ap6256_wifi_runtime_release_owner_with_breadcrumb(AP6256_CYW43_BREADCRUMB_RELEASE, AP6256_STATUS_BAD_PARAM);
         return AP6256_STATUS_BAD_PARAM;
     }
 
@@ -849,19 +1081,23 @@ ap6256_status_t ap6256_wifi_runtime_run_interactive(ap6256_wifi_runtime_summary_
         if (password_len <= 0) {
             (void)snprintf(detail, detail_len, "Timed out waiting for Wi-Fi password input.");
             ap6256_connectivity_set_wifi_note(detail);
-            network_manager_release(NETWORK_OWNER_WIFI);
+            ap6256_wifi_runtime_release_owner_with_breadcrumb(AP6256_CYW43_BREADCRUMB_RELEASE, AP6256_STATUS_TIMEOUT);
             return AP6256_STATUS_TIMEOUT;
         }
     }
 
     test_uart_write_str("[ INFO ] wifi.connect stage: join start\r\n");
     ap6256_wifi_runtime_capture_profile(selected, password);
-    return ap6256_wifi_runtime_run_common(selected->ssid,
-                                          password,
-                                          selected->secure,
-                                          summary,
-                                          detail,
-                                          detail_len);
+    {
+        ap6256_status_t st = ap6256_wifi_runtime_run_common(selected->ssid,
+                                                            password,
+                                                            selected->secure,
+                                                            summary,
+                                                            detail,
+                                                            detail_len);
+        ap6256_wifi_runtime_set_poll_paused(0U);
+        return st;
+    }
 }
 
 ap6256_status_t ap6256_wifi_runtime_run_cached(ap6256_wifi_runtime_summary_t *summary,
@@ -882,10 +1118,15 @@ ap6256_status_t ap6256_wifi_runtime_run_cached(ap6256_wifi_runtime_summary_t *su
         return AP6256_STATUS_TIMEOUT;
     }
 
-    return ap6256_wifi_runtime_run_common(s_wifi_runtime.cached_ssid,
-                                          s_wifi_runtime.cached_password,
-                                          s_wifi_runtime.cached_secure,
-                                          summary,
-                                          detail,
-                                          detail_len);
+    ap6256_wifi_runtime_set_poll_paused(1U);
+    {
+        ap6256_status_t st = ap6256_wifi_runtime_run_common(s_wifi_runtime.cached_ssid,
+                                                            s_wifi_runtime.cached_password,
+                                                            s_wifi_runtime.cached_secure,
+                                                            summary,
+                                                            detail,
+                                                            detail_len);
+        ap6256_wifi_runtime_set_poll_paused(0U);
+        return st;
+    }
 }
