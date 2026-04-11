@@ -489,7 +489,14 @@ static void ap6256_wifi_runtime_publish_compat_diag(void)
                                            ap6256_cyw43_port_send_tx_seq(),
                                            ap6256_cyw43_port_send_credit(),
                                            ap6256_cyw43_port_send_synthetic_credit(),
-                                           ap6256_cyw43_port_send_credit_status());
+                                           ap6256_cyw43_port_send_credit_status(),
+                                           ap6256_cyw43_port_wait_no_packet_count(),
+                                           ap6256_cyw43_port_wait_recovery_count(),
+                                           ap6256_cyw43_port_wait_forced_probe_count(),
+                                           ap6256_cyw43_port_wait_resend_count(),
+                                           ap6256_cyw43_port_ioctl_recovery_attempted(),
+                                           ap6256_cyw43_port_ioctl_forced_probe_attempted(),
+                                           ap6256_cyw43_port_ioctl_resend_attempted());
 }
 
 static void ap6256_wifi_runtime_seed_compat_diag(uint32_t profile)
@@ -557,7 +564,14 @@ static void ap6256_wifi_runtime_seed_compat_diag(uint32_t profile)
                                            0U,
                                            0U,
                                            0U,
-                                           0);
+                                           0,
+                                           0U,
+                                           0U,
+                                           0U,
+                                           0U,
+                                           0U,
+                                           0U,
+                                           0U);
 }
 
 static const char *ap6256_wifi_runtime_packet_source_name(uint32_t source)
@@ -634,7 +648,7 @@ static void ap6256_wifi_runtime_format_scan_start_detail(char *detail, size_t de
 {
     (void)snprintf(detail,
                    detail_len,
-                   "scan_start rc=%d bc=%s/%lu ph=%s sw=%s io=%lu/%lu id=%lu st=%ld p=%ld pend=%u src=%s irq=%02X f1=%08lX fc=%u/%u/%u syn=%u c53=%c/f%u/b%u/bs%lu/l%lu/st%ld/fr%u c52=%lu/%05lX",
+                   "scan_start rc=%d bc=%s/%lu ph=%s sw=%s io=%lu/%lu id=%lu st=%ld p=%ld pend=%u src=%s irq=%02X f1=%08lX fc=%u/%u/%u syn=%u np=%lu rec=%lu fp=%lu rs=%lu try=%u/%u/%u c53=%c/f%u/b%u/bs%lu/l%lu/st%ld/fr%u c52=%lu/%05lX",
                    rc,
                    ap6256_cyw43_port_breadcrumb_name(ap6256_cyw43_port_breadcrumb_stage()),
                    (unsigned long)ap6256_cyw43_port_breadcrumb_stage(),
@@ -653,6 +667,13 @@ static void ap6256_wifi_runtime_format_scan_start_detail(char *detail, size_t de
                    ap6256_cyw43_port_send_tx_seq(),
                    ap6256_cyw43_port_send_credit(),
                    ap6256_cyw43_port_send_synthetic_credit(),
+                   (unsigned long)ap6256_cyw43_port_wait_no_packet_count(),
+                   (unsigned long)ap6256_cyw43_port_wait_recovery_count(),
+                   (unsigned long)ap6256_cyw43_port_wait_forced_probe_count(),
+                   (unsigned long)ap6256_cyw43_port_wait_resend_count(),
+                   ap6256_cyw43_port_ioctl_recovery_attempted(),
+                   ap6256_cyw43_port_ioctl_forced_probe_attempted(),
+                   ap6256_cyw43_port_ioctl_resend_attempted(),
                    (ap6256_cyw43_port_last_cmd53_write() != 0U) ? 'w' : 'r',
                    ap6256_cyw43_port_last_cmd53_function(),
                    ap6256_cyw43_port_last_cmd53_block_mode(),

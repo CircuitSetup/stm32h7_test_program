@@ -94,6 +94,13 @@ typedef struct {
     uint8_t runtime_send_credit;
     uint8_t runtime_send_synthetic_credit;
     int32_t runtime_send_credit_status;
+    uint32_t runtime_wait_no_packet_count;
+    uint32_t runtime_wait_recovery_count;
+    uint32_t runtime_wait_forced_probe_count;
+    uint32_t runtime_wait_resend_count;
+    uint8_t runtime_ioctl_recovery_attempted;
+    uint8_t runtime_ioctl_forced_probe_attempted;
+    uint8_t runtime_ioctl_resend_attempted;
     char last_error[96];
     uint32_t last_update_ms;
 } ap6256_wifi_state_t;
@@ -208,7 +215,14 @@ void ap6256_connectivity_set_wifi_poll_diag(uint8_t packet_pending,
                                             uint8_t send_tx_seq,
                                             uint8_t send_credit,
                                             uint8_t send_synthetic_credit,
-                                            int32_t send_credit_status);
+                                            int32_t send_credit_status,
+                                            uint32_t wait_no_packet_count,
+                                            uint32_t wait_recovery_count,
+                                            uint32_t wait_forced_probe_count,
+                                            uint32_t wait_resend_count,
+                                            uint8_t ioctl_recovery_attempted,
+                                            uint8_t ioctl_forced_probe_attempted,
+                                            uint8_t ioctl_resend_attempted);
 
 void ap6256_connectivity_set_bt_note(const char *text);
 void ap6256_connectivity_set_bt_runtime(uint8_t stack_ready,

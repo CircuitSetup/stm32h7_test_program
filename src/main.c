@@ -442,8 +442,12 @@ static void app_network_manager_task(void *argument)
 
 static void app_print_wifi_breadcrumb(void)
 {
+    ap6256_cyw43_pre_reset_diag_t pre_reset;
     char breadcrumb_reset_flags[64];
     char boot_reset_flags[64];
+
+    memset(&pre_reset, 0, sizeof(pre_reset));
+    ap6256_cyw43_port_get_pre_reset_diag(&pre_reset);
 
     ap6256_cyw43_port_format_reset_flags(ap6256_cyw43_port_breadcrumb_reset_flags(),
                                          breadcrumb_reset_flags,
@@ -461,6 +465,26 @@ static void app_print_wifi_breadcrumb(void)
                      (unsigned long)ap6256_cyw43_port_boot_reset_flags(),
                      breadcrumb_reset_flags,
                      (unsigned long)ap6256_cyw43_port_breadcrumb_reset_flags());
+    test_uart_printf("Pre-reset Wi-Fi diag: valid=%u bc=%s/%lu io=%lu/%lu id=%lu st=%ld poll=%ld pend=%u/%u c52=%lu/0x%08lX c53=%c/f%u/b%u/bs%lu/l%lu/st%ld/fr%u\r\n",
+                     pre_reset.valid,
+                     ap6256_cyw43_port_breadcrumb_name(pre_reset.breadcrumb_stage),
+                     (unsigned long)pre_reset.breadcrumb_stage,
+                     (unsigned long)pre_reset.ioctl_kind,
+                     (unsigned long)pre_reset.ioctl_cmd,
+                     (unsigned long)pre_reset.ioctl_id,
+                     (long)pre_reset.ioctl_status,
+                     (long)pre_reset.ioctl_poll,
+                     pre_reset.packet_pending,
+                     pre_reset.packet_pending_source,
+                     (unsigned long)pre_reset.last_cmd,
+                     (unsigned long)pre_reset.last_cmd_arg,
+                     (pre_reset.cmd53_write != 0U) ? 'w' : 'r',
+                     pre_reset.cmd53_function,
+                     pre_reset.cmd53_block_mode,
+                     (unsigned long)pre_reset.cmd53_block_size,
+                     (unsigned long)pre_reset.cmd53_length,
+                     (long)pre_reset.cmd53_status,
+                     pre_reset.cmd53_frame_size);
 }
 
 static uint32_t app_hash_string(const char *text)

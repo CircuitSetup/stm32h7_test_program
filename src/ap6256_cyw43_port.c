@@ -20,6 +20,8 @@
 #define AP6256_CYW43_SDIO_DAT1_PORT GPIOC
 #define AP6256_CYW43_SDIO_DAT1_PIN  GPIO_PIN_9
 #define AP6256_CYW43_BREADCRUMB_MAGIC 0xA6256C43UL
+#define AP6256_CYW43_PRE_RESET_MAGIC 0xA6256D43UL
+#define AP6256_CYW43_PRE_RESET_THROTTLE_MS 25U
 
 static osMutexId_t s_cyw43_mutex;
 static volatile uint8_t s_poll_pending;
@@ -123,6 +125,14 @@ static volatile int32_t s_cyw43_breadcrumb_detail;
 static volatile uint32_t s_cyw43_breadcrumb_tick_ms;
 static volatile uint32_t s_cyw43_breadcrumb_reset_flags;
 static volatile uint32_t s_cyw43_boot_reset_flags;
+static volatile uint32_t s_cyw43_wait_no_packet_count;
+static volatile uint32_t s_cyw43_wait_recovery_count;
+static volatile uint32_t s_cyw43_wait_forced_probe_count;
+static volatile uint32_t s_cyw43_wait_resend_count;
+static volatile uint8_t s_cyw43_ioctl_recovery_attempted;
+static volatile uint8_t s_cyw43_ioctl_forced_probe_attempted;
+static volatile uint8_t s_cyw43_ioctl_resend_attempted;
+static volatile uint32_t s_cyw43_last_pre_reset_persist_tick;
 
 static void ap6256_cyw43_enable_backup_access(void)
 {
@@ -153,6 +163,123 @@ static void ap6256_cyw43_append_reset_flag(char *buffer, size_t buffer_len, cons
     buffer[buffer_len - 1U] = '\0';
 }
 
+static uint8_t ap6256_cyw43_pre_reset_valid_raw(void)
+{
+    return (RTC->BKP8R == AP6256_CYW43_PRE_RESET_MAGIC) ? 1U : 0U;
+}
+
+static void ap6256_cyw43_port_persist_pre_reset_diag(uint8_t force)
+{
+    uint32_t now = HAL_GetTick();
+    uint32_t iface_len;
+    uint32_t packet_pack;
+    uint32_t cmd53_pack;
+    uint32_t send_pack;
+
+    if ((force == 0U) &&
+        ((now - s_cyw43_last_pre_reset_persist_tick) < AP6256_CYW43_PRE_RESET_THROTTLE_MS)) {
+        return;
+    }
+    s_cyw43_last_pre_reset_persist_tick = now;
+
+    iface_len = (s_cyw43_last_ioctl_iface & 0xFFU) |
+                ((s_cyw43_last_ioctl_len & 0x00FFFFFFUL) << 8U);
+    packet_pack = (s_cyw43_packet_pending & 0x01U) |
+                  ((uint32_t)(s_cyw43_packet_pending_source & 0x07U) << 1U) |
+                  ((uint32_t)s_cyw43_dat1_level << 8U) |
+                  ((uint32_t)s_cyw43_cccr_int_pending << 16U);
+    cmd53_pack = (s_cyw43_last_cmd53_write & 0x01U) |
+                 ((uint32_t)(s_cyw43_last_cmd53_function & 0x07U) << 1U) |
+                 ((uint32_t)(s_cyw43_last_cmd53_block_mode & 0x01U) << 4U) |
+                 ((uint32_t)s_cyw43_last_cmd53_frame_size << 8U);
+    send_pack = (uint32_t)s_cyw43_send_flow_control |
+                ((uint32_t)s_cyw43_send_tx_seq << 8U) |
+                ((uint32_t)s_cyw43_send_credit << 16U) |
+                ((uint32_t)(s_cyw43_send_synthetic_credit & 0x01U) << 24U);
+
+    ap6256_cyw43_enable_backup_access();
+    RTC->BKP8R = AP6256_CYW43_PRE_RESET_MAGIC;
+    RTC->BKP9R = s_cyw43_breadcrumb_stage;
+    RTC->BKP10R = (uint32_t)s_cyw43_breadcrumb_detail;
+    RTC->BKP11R = s_cyw43_breadcrumb_tick_ms;
+    RTC->BKP12R = s_cyw43_last_ioctl_phase;
+    RTC->BKP13R = s_cyw43_last_ioctl_kind;
+    RTC->BKP14R = s_cyw43_last_ioctl_cmd;
+    RTC->BKP15R = iface_len;
+    RTC->BKP16R = s_cyw43_last_ioctl_id;
+    RTC->BKP17R = (uint32_t)s_cyw43_last_ioctl_status;
+    RTC->BKP18R = (uint32_t)s_cyw43_last_ioctl_poll;
+    RTC->BKP19R = packet_pack;
+    RTC->BKP20R = (uint32_t)s_cyw43_packet_pending_status;
+    RTC->BKP21R = s_cyw43_f1_int_status;
+    RTC->BKP22R = (uint32_t)s_cyw43_kso_status;
+    RTC->BKP23R = s_cyw43_last_cmd;
+    RTC->BKP24R = s_cyw43_last_cmd_arg;
+    RTC->BKP25R = (uint32_t)s_cyw43_last_cmd_status;
+    RTC->BKP26R = s_cyw43_last_cmd_response;
+    RTC->BKP27R = cmd53_pack;
+    RTC->BKP28R = s_cyw43_last_cmd53_block_size;
+    RTC->BKP29R = s_cyw43_last_cmd53_length;
+    RTC->BKP30R = (uint32_t)s_cyw43_last_cmd53_status;
+    RTC->BKP31R = send_pack;
+}
+
+static void ap6256_cyw43_port_read_pre_reset_diag(ap6256_cyw43_pre_reset_diag_t *diag)
+{
+    uint32_t iface_len;
+    uint32_t packet_pack;
+    uint32_t cmd53_pack;
+    uint32_t send_pack;
+
+    if (diag == NULL) {
+        return;
+    }
+
+    memset(diag, 0, sizeof(*diag));
+    if (ap6256_cyw43_pre_reset_valid_raw() == 0U) {
+        return;
+    }
+
+    diag->valid = 1U;
+    diag->breadcrumb_stage = RTC->BKP9R;
+    diag->breadcrumb_detail = (int32_t)RTC->BKP10R;
+    diag->tick_ms = RTC->BKP11R;
+    diag->ioctl_phase = RTC->BKP12R;
+    diag->ioctl_kind = RTC->BKP13R;
+    diag->ioctl_cmd = RTC->BKP14R;
+    iface_len = RTC->BKP15R;
+    diag->ioctl_iface = iface_len & 0xFFU;
+    diag->ioctl_len = (iface_len >> 8U) & 0x00FFFFFFUL;
+    diag->ioctl_id = RTC->BKP16R;
+    diag->ioctl_status = (int32_t)RTC->BKP17R;
+    diag->ioctl_poll = (int32_t)RTC->BKP18R;
+    packet_pack = RTC->BKP19R;
+    diag->packet_pending = packet_pack & 0x01U;
+    diag->packet_pending_source = (packet_pack >> 1U) & 0x07U;
+    diag->dat1_level = (packet_pack >> 8U) & 0xFFU;
+    diag->cccr_int_pending = (packet_pack >> 16U) & 0xFFU;
+    diag->packet_pending_status = (int32_t)RTC->BKP20R;
+    diag->f1_int_status = RTC->BKP21R;
+    diag->kso_status = (int32_t)RTC->BKP22R;
+    diag->last_cmd = RTC->BKP23R;
+    diag->last_cmd_arg = RTC->BKP24R;
+    diag->last_cmd_status = (int32_t)RTC->BKP25R;
+    diag->last_cmd_response = RTC->BKP26R;
+    cmd53_pack = RTC->BKP27R;
+    diag->cmd53_write = cmd53_pack & 0x01U;
+    diag->cmd53_function = (cmd53_pack >> 1U) & 0x07U;
+    diag->cmd53_block_mode = (cmd53_pack >> 4U) & 0x01U;
+    diag->cmd53_frame_size = (uint16_t)((cmd53_pack >> 8U) & 0xFFFFU);
+    diag->cmd53_block_size = RTC->BKP28R;
+    diag->cmd53_length = RTC->BKP29R;
+    diag->cmd53_status = (int32_t)RTC->BKP30R;
+    send_pack = RTC->BKP31R;
+    diag->send_flow_control = send_pack & 0xFFU;
+    diag->send_tx_seq = (send_pack >> 8U) & 0xFFU;
+    diag->send_credit = (send_pack >> 16U) & 0xFFU;
+    diag->send_synthetic_credit = (send_pack >> 24U) & 0x01U;
+}
+
 void ap6256_cyw43_port_record_breadcrumb(uint32_t stage, int32_t detail)
 {
     uint32_t tick_ms = HAL_GetTick();
@@ -169,6 +296,7 @@ void ap6256_cyw43_port_record_breadcrumb(uint32_t stage, int32_t detail)
     RTC->BKP3R = (uint32_t)detail;
     RTC->BKP4R = tick_ms;
     RTC->BKP5R = reset_flags;
+    ap6256_cyw43_port_persist_pre_reset_diag(1U);
 }
 
 void ap6256_cyw43_port_capture_boot_reset_flags(uint32_t flags)
@@ -348,6 +476,7 @@ static void ap6256_cyw43_port_record_cmd53(uint8_t write,
     if ((write == 0U) && (status == 0) && (buf != NULL) && (len >= 2U)) {
         s_cyw43_last_cmd53_frame_size = (uint16_t)buf[0] | ((uint16_t)buf[1] << 8U);
     }
+    ap6256_cyw43_port_persist_pre_reset_diag(0U);
 }
 
 static osMutexId_t ap6256_cyw43_mutex(void)
@@ -892,6 +1021,7 @@ void ap6256_cyw43_port_record_last_cmd(uint32_t cmd, uint32_t arg, int32_t statu
     s_cyw43_last_cmd_arg = arg;
     s_cyw43_last_cmd_status = status;
     s_cyw43_last_cmd_response = response;
+    ap6256_cyw43_port_persist_pre_reset_diag(0U);
 }
 
 uint32_t ap6256_cyw43_port_last_cmd(void)
@@ -1307,11 +1437,13 @@ void ap6256_cyw43_port_record_ioctl(uint32_t kind,
     s_cyw43_last_ioctl_id = id;
     s_cyw43_last_ioctl_status = status;
     s_cyw43_last_ioctl_poll = last_poll;
+    ap6256_cyw43_port_persist_pre_reset_diag(1U);
 }
 
 void ap6256_cyw43_port_set_ioctl_phase(uint32_t phase)
 {
     s_cyw43_last_ioctl_phase = phase;
+    ap6256_cyw43_port_persist_pre_reset_diag(0U);
 }
 
 uint32_t ap6256_cyw43_port_last_ioctl_kind(void)
@@ -1367,6 +1499,7 @@ void ap6256_cyw43_port_record_packet_pending(uint8_t packet_pending,
     s_cyw43_cccr_int_pending = cccr_int_pending;
     s_cyw43_f1_int_status = f1_int_status;
     s_cyw43_packet_pending_status = status;
+    ap6256_cyw43_port_persist_pre_reset_diag(0U);
 }
 
 uint8_t ap6256_cyw43_port_packet_pending(void)
@@ -1402,6 +1535,7 @@ int32_t ap6256_cyw43_port_packet_pending_status(void)
 void ap6256_cyw43_port_set_kso_status(int32_t status)
 {
     s_cyw43_kso_status = status;
+    ap6256_cyw43_port_persist_pre_reset_diag(0U);
 }
 
 int32_t ap6256_cyw43_port_kso_status(void)
@@ -1430,6 +1564,7 @@ void ap6256_cyw43_port_record_send_credit(uint8_t flow_control,
     s_cyw43_send_credit = credit;
     s_cyw43_send_synthetic_credit = synthetic_credit;
     s_cyw43_send_credit_status = status;
+    ap6256_cyw43_port_persist_pre_reset_diag(0U);
 }
 
 uint8_t ap6256_cyw43_port_send_flow_control(void)
@@ -1455,6 +1590,85 @@ uint8_t ap6256_cyw43_port_send_synthetic_credit(void)
 int32_t ap6256_cyw43_port_send_credit_status(void)
 {
     return s_cyw43_send_credit_status;
+}
+
+void ap6256_cyw43_port_note_wait_no_packet(void)
+{
+    s_cyw43_wait_no_packet_count++;
+    ap6256_cyw43_port_persist_pre_reset_diag(0U);
+}
+
+void ap6256_cyw43_port_note_wait_recovery(void)
+{
+    s_cyw43_wait_recovery_count++;
+    ap6256_cyw43_port_persist_pre_reset_diag(0U);
+}
+
+void ap6256_cyw43_port_note_wait_forced_probe(void)
+{
+    s_cyw43_wait_forced_probe_count++;
+    ap6256_cyw43_port_persist_pre_reset_diag(0U);
+}
+
+void ap6256_cyw43_port_note_wait_resend(void)
+{
+    s_cyw43_wait_resend_count++;
+    ap6256_cyw43_port_persist_pre_reset_diag(0U);
+}
+
+uint32_t ap6256_cyw43_port_wait_no_packet_count(void)
+{
+    return s_cyw43_wait_no_packet_count;
+}
+
+uint32_t ap6256_cyw43_port_wait_recovery_count(void)
+{
+    return s_cyw43_wait_recovery_count;
+}
+
+uint32_t ap6256_cyw43_port_wait_forced_probe_count(void)
+{
+    return s_cyw43_wait_forced_probe_count;
+}
+
+uint32_t ap6256_cyw43_port_wait_resend_count(void)
+{
+    return s_cyw43_wait_resend_count;
+}
+
+void ap6256_cyw43_port_set_ioctl_attempt_flags(uint8_t recovery_attempted,
+                                               uint8_t forced_probe_attempted,
+                                               uint8_t resend_attempted)
+{
+    s_cyw43_ioctl_recovery_attempted = (recovery_attempted != 0U) ? 1U : 0U;
+    s_cyw43_ioctl_forced_probe_attempted = (forced_probe_attempted != 0U) ? 1U : 0U;
+    s_cyw43_ioctl_resend_attempted = (resend_attempted != 0U) ? 1U : 0U;
+    ap6256_cyw43_port_persist_pre_reset_diag(0U);
+}
+
+uint8_t ap6256_cyw43_port_ioctl_recovery_attempted(void)
+{
+    return s_cyw43_ioctl_recovery_attempted;
+}
+
+uint8_t ap6256_cyw43_port_ioctl_forced_probe_attempted(void)
+{
+    return s_cyw43_ioctl_forced_probe_attempted;
+}
+
+uint8_t ap6256_cyw43_port_ioctl_resend_attempted(void)
+{
+    return s_cyw43_ioctl_resend_attempted;
+}
+
+void ap6256_cyw43_port_get_pre_reset_diag(ap6256_cyw43_pre_reset_diag_t *diag)
+{
+    ap6256_cyw43_port_read_pre_reset_diag(diag);
+}
+
+uint8_t ap6256_cyw43_port_pre_reset_diag_valid(void)
+{
+    return ap6256_cyw43_pre_reset_valid_raw();
 }
 
 void ap6256_cyw43_port_set_reference_nvram_enabled(uint8_t enable)

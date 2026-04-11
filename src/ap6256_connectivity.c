@@ -440,7 +440,14 @@ void ap6256_connectivity_set_wifi_poll_diag(uint8_t packet_pending,
                                             uint8_t send_tx_seq,
                                             uint8_t send_credit,
                                             uint8_t send_synthetic_credit,
-                                            int32_t send_credit_status)
+                                            int32_t send_credit_status,
+                                            uint32_t wait_no_packet_count,
+                                            uint32_t wait_recovery_count,
+                                            uint32_t wait_forced_probe_count,
+                                            uint32_t wait_resend_count,
+                                            uint8_t ioctl_recovery_attempted,
+                                            uint8_t ioctl_forced_probe_attempted,
+                                            uint8_t ioctl_resend_attempted)
 {
     s_wifi_state.runtime_packet_pending = packet_pending;
     s_wifi_state.runtime_packet_pending_source = packet_pending_source;
@@ -462,6 +469,13 @@ void ap6256_connectivity_set_wifi_poll_diag(uint8_t packet_pending,
     s_wifi_state.runtime_send_credit = send_credit;
     s_wifi_state.runtime_send_synthetic_credit = send_synthetic_credit;
     s_wifi_state.runtime_send_credit_status = send_credit_status;
+    s_wifi_state.runtime_wait_no_packet_count = wait_no_packet_count;
+    s_wifi_state.runtime_wait_recovery_count = wait_recovery_count;
+    s_wifi_state.runtime_wait_forced_probe_count = wait_forced_probe_count;
+    s_wifi_state.runtime_wait_resend_count = wait_resend_count;
+    s_wifi_state.runtime_ioctl_recovery_attempted = ioctl_recovery_attempted;
+    s_wifi_state.runtime_ioctl_forced_probe_attempted = ioctl_forced_probe_attempted;
+    s_wifi_state.runtime_ioctl_resend_attempted = ioctl_resend_attempted;
     s_wifi_state.last_update_ms = HAL_GetTick();
 }
 
@@ -525,8 +539,12 @@ const char *ap6256_connectivity_wifi_security_name(ap6256_wifi_security_t securi
 void ap6256_connectivity_print_wifi_info(void)
 {
     const ap6256_wifi_state_t *state = &s_wifi_state;
+    ap6256_cyw43_pre_reset_diag_t pre_reset;
     char breadcrumb_reset_flags[64];
     char boot_reset_flags[64];
+
+    memset(&pre_reset, 0, sizeof(pre_reset));
+    ap6256_cyw43_port_get_pre_reset_diag(&pre_reset);
 
     ap6256_cyw43_port_format_reset_flags(ap6256_cyw43_port_breadcrumb_reset_flags(),
                                          breadcrumb_reset_flags,
@@ -642,7 +660,40 @@ void ap6256_connectivity_print_wifi_info(void)
                      breadcrumb_reset_flags,
                      (unsigned long)ap6256_cyw43_port_breadcrumb_reset_flags(),
                      (long)ap6256_cyw43_port_setup_status());
-    test_uart_printf("  Poll diag: pend=%u src=%s dat1=%u irq=0x%02X f1int=0x%08lX pst=%ld kso=%ld ioctl=%s %lu/%lu if=%lu len=%lu id=%lu st=%ld poll=%ld\r\n",
+    test_uart_printf("  Pre-reset diag: valid=%u bc=%s/%lu detail=%ld tick=%lu io=%s %lu/%lu if=%lu len=%lu id=%lu st=%ld poll=%ld pend=%u/%s dat1=%u irq=%02X f1=%08lX c52=%lu/%08lX st=%ld c53=%c/f%u/b%u/bs%lu/l%lu/st%ld/fr%u fc=%u/%u/%u syn=%u\r\n",
+                     pre_reset.valid,
+                     ap6256_cyw43_port_breadcrumb_name(pre_reset.breadcrumb_stage),
+                     (unsigned long)pre_reset.breadcrumb_stage,
+                     (long)pre_reset.breadcrumb_detail,
+                     (unsigned long)pre_reset.tick_ms,
+                     ap6256_connectivity_ioctl_phase_name(pre_reset.ioctl_phase),
+                     (unsigned long)pre_reset.ioctl_kind,
+                     (unsigned long)pre_reset.ioctl_cmd,
+                     (unsigned long)pre_reset.ioctl_iface,
+                     (unsigned long)pre_reset.ioctl_len,
+                     (unsigned long)pre_reset.ioctl_id,
+                     (long)pre_reset.ioctl_status,
+                     (long)pre_reset.ioctl_poll,
+                     pre_reset.packet_pending,
+                     ap6256_connectivity_packet_source_name(pre_reset.packet_pending_source),
+                     pre_reset.dat1_level,
+                     pre_reset.cccr_int_pending,
+                     (unsigned long)pre_reset.f1_int_status,
+                     (unsigned long)pre_reset.last_cmd,
+                     (unsigned long)pre_reset.last_cmd_arg,
+                     (long)pre_reset.last_cmd_status,
+                     (pre_reset.cmd53_write != 0U) ? 'w' : 'r',
+                     pre_reset.cmd53_function,
+                     pre_reset.cmd53_block_mode,
+                     (unsigned long)pre_reset.cmd53_block_size,
+                     (unsigned long)pre_reset.cmd53_length,
+                     (long)pre_reset.cmd53_status,
+                     pre_reset.cmd53_frame_size,
+                     pre_reset.send_flow_control,
+                     pre_reset.send_tx_seq,
+                     pre_reset.send_credit,
+                     pre_reset.send_synthetic_credit);
+    test_uart_printf("  Poll diag: pend=%u src=%s dat1=%u irq=0x%02X f1int=0x%08lX pst=%ld kso=%ld ioctl=%s %lu/%lu if=%lu len=%lu id=%lu st=%ld poll=%ld np=%lu rec=%lu fp=%lu rs=%lu try=%u/%u/%u\r\n",
                      state->runtime_packet_pending,
                      ap6256_connectivity_packet_source_name(state->runtime_packet_pending_source),
                      state->runtime_dat1_level,
@@ -657,7 +708,14 @@ void ap6256_connectivity_print_wifi_info(void)
                      (unsigned long)state->runtime_ioctl_len,
                      (unsigned long)state->runtime_ioctl_id,
                      (long)state->runtime_ioctl_status,
-                     (long)state->runtime_ioctl_poll);
+                     (long)state->runtime_ioctl_poll,
+                     (unsigned long)state->runtime_wait_no_packet_count,
+                     (unsigned long)state->runtime_wait_recovery_count,
+                     (unsigned long)state->runtime_wait_forced_probe_count,
+                     (unsigned long)state->runtime_wait_resend_count,
+                     state->runtime_ioctl_recovery_attempted,
+                     state->runtime_ioctl_forced_probe_attempted,
+                     state->runtime_ioctl_resend_attempted);
     test_uart_printf("  Send diag: flow=%u seq=%u credit=%u synth=%u st=%ld\r\n",
                      state->runtime_send_flow_control,
                      state->runtime_send_tx_seq,
