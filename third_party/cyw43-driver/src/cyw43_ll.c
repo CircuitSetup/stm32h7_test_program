@@ -951,6 +951,7 @@ static int cyw43_sdpcm_send_common(cyw43_int_t *self, uint32_t kind, size_t len,
                                                      self->wwd_sdpcm_last_bus_data_credit,
                                                      synthetic_credit,
                                                      -CYW43_ETIMEDOUT);
+                ap6256_cyw43_port_set_ioctl_phase(AP6256_CYW43_IOCTL_PHASE_SEND_CREDIT_TIMEOUT);
                 return CYW43_FAIL_FAST_CHECK(-CYW43_ETIMEDOUT);
             }
             if (++wait_loops > 5000U) {
@@ -959,6 +960,7 @@ static int cyw43_sdpcm_send_common(cyw43_int_t *self, uint32_t kind, size_t len,
                                                      self->wwd_sdpcm_last_bus_data_credit,
                                                      synthetic_credit,
                                                      -CYW43_ETIMEDOUT);
+                ap6256_cyw43_port_set_ioctl_phase(AP6256_CYW43_IOCTL_PHASE_SEND_CREDIT_TIMEOUT);
                 return CYW43_FAIL_FAST_CHECK(-CYW43_ETIMEDOUT);
             }
             CYW43_SDPCM_SEND_COMMON_WAIT;
@@ -1626,9 +1628,22 @@ static int cyw43_do_ioctl(cyw43_int_t *self, uint32_t kind, uint32_t cmd, size_t
                                         (int32_t)(((cmd & 0x3FFU) << 16U) | (kind & 0xFFFFU)));
 
 send_request:
+    ap6256_cyw43_port_begin_ioctl(kind,
+                                  cmd,
+                                  iface,
+                                  (uint32_t)len,
+                                  (uint32_t)(self->wwd_sdpcm_requested_ioctl_id + 1U));
     ret = cyw43_send_ioctl(self, kind, cmd, len, buf, iface);
+    ap6256_cyw43_port_begin_ioctl(kind,
+                                  cmd,
+                                  iface,
+                                  (uint32_t)len,
+                                  self->wwd_sdpcm_requested_ioctl_id);
     if (ret != 0) {
-        ap6256_cyw43_port_set_ioctl_phase(AP6256_CYW43_IOCTL_PHASE_SEND_FAIL);
+        if (ap6256_cyw43_port_last_ioctl_phase() != AP6256_CYW43_IOCTL_PHASE_SEND_CREDIT_TIMEOUT) {
+            ap6256_cyw43_port_set_ioctl_phase(AP6256_CYW43_IOCTL_PHASE_SEND_FAIL);
+        }
+        ap6256_cyw43_port_finish_ioctl(ret, ret);
         ap6256_cyw43_port_set_ioctl_attempt_flags(recovery_attempted,
                                                   forced_probe_attempted,
                                                   resend_attempted);
@@ -1666,10 +1681,12 @@ send_request:
             ret = cyw43_ll_sdpcm_poll_device(self, &res_len, &res_buf);
         }
         last_poll = ret;
+        ap6256_cyw43_port_update_ioctl_poll(last_poll);
         if (ret == CONTROL_HEADER) {
             const struct ioctl_header_t *ioctl_header = (const void *)(res_buf - IOCTL_HEADER_LEN);
             if (ioctl_header->status != 0U) {
                 ap6256_cyw43_port_set_ioctl_phase(AP6256_CYW43_IOCTL_PHASE_CONTROL_STATUS);
+                ap6256_cyw43_port_finish_ioctl((int32_t)ioctl_header->status, last_poll);
                 ap6256_cyw43_port_set_ioctl_attempt_flags(recovery_attempted,
                                                           forced_probe_attempted,
                                                           resend_attempted);
@@ -1691,6 +1708,7 @@ send_request:
             // it seems that res_len is always the length of the argument in buf
             memmove(buf, res_buf, len < res_len ? len : res_len);
             ap6256_cyw43_port_set_ioctl_phase(AP6256_CYW43_IOCTL_PHASE_OK);
+            ap6256_cyw43_port_finish_ioctl(0, last_poll);
             ap6256_cyw43_port_set_ioctl_attempt_flags(recovery_attempted,
                                                       forced_probe_attempted,
                                                       resend_attempted);
@@ -1729,6 +1747,7 @@ send_request:
                 wake_ret = ap6256_cyw43_scan_wake(self, CYW_INT_TO_LL(self));
                 if (wake_ret != 0) {
                     ap6256_cyw43_port_set_ioctl_phase(AP6256_CYW43_IOCTL_PHASE_SCAN_WAKE);
+                    ap6256_cyw43_port_finish_ioctl(wake_ret, wake_ret);
                     ap6256_cyw43_port_set_ioctl_attempt_flags(recovery_attempted,
                                                               forced_probe_attempted,
                                                               resend_attempted);
@@ -1743,16 +1762,14 @@ send_request:
                 }
 
                 (void)cyw43_ll_sdio_packet_pending(self);
-                if (ap6256_cyw43_port_packet_pending_source() == AP6256_CYW43_PACKET_SRC_F1_MAILBOX) {
-                    forced_probe_pending = 1U;
-                    if (forced_probe_attempted == 0U) {
-                        forced_probe_attempted = 1U;
-                        ap6256_cyw43_port_note_wait_forced_probe();
-                    }
-                    ap6256_cyw43_port_set_ioctl_attempt_flags(recovery_attempted,
-                                                              forced_probe_attempted,
-                                                              resend_attempted);
+                forced_probe_pending = 1U;
+                if (forced_probe_attempted == 0U) {
+                    forced_probe_attempted = 1U;
+                    ap6256_cyw43_port_note_wait_forced_probe();
                 }
+                ap6256_cyw43_port_set_ioctl_attempt_flags(recovery_attempted,
+                                                          forced_probe_attempted,
+                                                          resend_attempted);
             }
 
             if (no_packet_loops >= AP6256_CYW43_IOCTL_NO_PACKET_BUDGET_LOOPS) {
@@ -1781,8 +1798,32 @@ send_request:
         goto send_request;
     }
 
+    if ((last_poll == -1) && allow_scan_resend) {
+        /*
+         * BCM43456 can accept ESCAN and deliver results asynchronously without a
+         * synchronous control response packet on some host/SDIO timings.
+         * Treat this as accepted so scan completion is handled by the bounded
+         * scan wait path instead of failing at scan start.
+         */
+        ap6256_cyw43_port_set_ioctl_phase(AP6256_CYW43_IOCTL_PHASE_ACCEPTED_ASYNC);
+        ap6256_cyw43_port_finish_ioctl(1, last_poll);
+        ap6256_cyw43_port_set_ioctl_attempt_flags(recovery_attempted,
+                                                  forced_probe_attempted,
+                                                  resend_attempted);
+        ap6256_cyw43_port_record_ioctl(kind,
+                                       cmd,
+                                       iface,
+                                       (uint32_t)len,
+                                       self->wwd_sdpcm_requested_ioctl_id,
+                                       1,
+                                       last_poll);
+        ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_IOCTL_WAIT, 1);
+        return 0;
+    }
+
     CYW43_WARN("do_ioctl(%u, %u, %u): timeout\n", (unsigned int)kind, (unsigned int)cmd, (unsigned int)len);
     ap6256_cyw43_port_set_ioctl_phase(ap6256_ioctl_phase_from_poll(last_poll));
+    ap6256_cyw43_port_finish_ioctl(-CYW43_ETIMEDOUT, last_poll);
     ap6256_cyw43_port_set_ioctl_attempt_flags(recovery_attempted,
                                               forced_probe_attempted,
                                               resend_attempted);

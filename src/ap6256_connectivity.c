@@ -128,6 +128,10 @@ static const char *ap6256_connectivity_ioctl_phase_name(uint32_t phase)
         return "ok";
     case AP6256_CYW43_IOCTL_PHASE_SEND_CREDIT:
         return "send_credit";
+    case AP6256_CYW43_IOCTL_PHASE_SEND_CREDIT_TIMEOUT:
+        return "send_credit_timeout";
+    case AP6256_CYW43_IOCTL_PHASE_ACCEPTED_ASYNC:
+        return "accepted_async";
     default:
         return "unknown";
     }
@@ -660,7 +664,7 @@ void ap6256_connectivity_print_wifi_info(void)
                      breadcrumb_reset_flags,
                      (unsigned long)ap6256_cyw43_port_breadcrumb_reset_flags(),
                      (long)ap6256_cyw43_port_setup_status());
-    test_uart_printf("  Pre-reset diag: valid=%u bc=%s/%lu detail=%ld tick=%lu io=%s %lu/%lu if=%lu len=%lu id=%lu st=%ld poll=%ld pend=%u/%s dat1=%u irq=%02X f1=%08lX c52=%lu/%08lX st=%ld c53=%c/f%u/b%u/bs%lu/l%lu/st%ld/fr%u fc=%u/%u/%u syn=%u\r\n",
+    test_uart_printf("  Pre-reset diag: valid=%u bc=%s/%lu detail=%ld tick=%lu io_cur=%s %lu/%lu if=%lu len=%lu id=%lu st=%ld poll=%ld io_done=%lu/%lu if=%lu id=%lu st=%ld poll=%ld pend=%u/%s dat1=%u irq=%02X f1=%08lX c52=%lu/%08lX st=%ld c53=%c/f%u/b%u/bs%lu/l%lu/st%ld/fr%u fc=%u/%u/%u syn=%u\r\n",
                      pre_reset.valid,
                      ap6256_cyw43_port_breadcrumb_name(pre_reset.breadcrumb_stage),
                      (unsigned long)pre_reset.breadcrumb_stage,
@@ -674,6 +678,12 @@ void ap6256_connectivity_print_wifi_info(void)
                      (unsigned long)pre_reset.ioctl_id,
                      (long)pre_reset.ioctl_status,
                      (long)pre_reset.ioctl_poll,
+                     (unsigned long)pre_reset.completed_ioctl_kind,
+                     (unsigned long)pre_reset.completed_ioctl_cmd,
+                     (unsigned long)pre_reset.completed_ioctl_iface,
+                     (unsigned long)pre_reset.completed_ioctl_id,
+                     (long)pre_reset.completed_ioctl_status,
+                     (long)pre_reset.completed_ioctl_poll,
                      pre_reset.packet_pending,
                      ap6256_connectivity_packet_source_name(pre_reset.packet_pending_source),
                      pre_reset.dat1_level,
@@ -693,7 +703,7 @@ void ap6256_connectivity_print_wifi_info(void)
                      pre_reset.send_tx_seq,
                      pre_reset.send_credit,
                      pre_reset.send_synthetic_credit);
-    test_uart_printf("  Poll diag: pend=%u src=%s dat1=%u irq=0x%02X f1int=0x%08lX pst=%ld kso=%ld ioctl=%s %lu/%lu if=%lu len=%lu id=%lu st=%ld poll=%ld np=%lu rec=%lu fp=%lu rs=%lu try=%u/%u/%u\r\n",
+    test_uart_printf("  Poll diag: pend=%u src=%s dat1=%u irq=0x%02X f1int=0x%08lX pst=%ld kso=%ld ioctl=%s %lu/%lu if=%lu len=%lu id=%lu st=%ld poll=%ld done=%lu/%lu if=%lu id=%lu st=%ld poll=%ld np=%lu rec=%lu fp=%lu rs=%lu try=%u/%u/%u\r\n",
                      state->runtime_packet_pending,
                      ap6256_connectivity_packet_source_name(state->runtime_packet_pending_source),
                      state->runtime_dat1_level,
@@ -709,6 +719,12 @@ void ap6256_connectivity_print_wifi_info(void)
                      (unsigned long)state->runtime_ioctl_id,
                      (long)state->runtime_ioctl_status,
                      (long)state->runtime_ioctl_poll,
+                     (unsigned long)ap6256_cyw43_port_last_completed_ioctl_kind(),
+                     (unsigned long)ap6256_cyw43_port_last_completed_ioctl_cmd(),
+                     (unsigned long)ap6256_cyw43_port_last_completed_ioctl_iface(),
+                     (unsigned long)ap6256_cyw43_port_last_completed_ioctl_id(),
+                     (long)ap6256_cyw43_port_last_completed_ioctl_status(),
+                     (long)ap6256_cyw43_port_last_completed_ioctl_poll(),
                      (unsigned long)state->runtime_wait_no_packet_count,
                      (unsigned long)state->runtime_wait_recovery_count,
                      (unsigned long)state->runtime_wait_forced_probe_count,

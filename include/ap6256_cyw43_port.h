@@ -20,6 +20,8 @@
 #define AP6256_CYW43_IOCTL_PHASE_CONTROL_STATUS 7U
 #define AP6256_CYW43_IOCTL_PHASE_OK             8U
 #define AP6256_CYW43_IOCTL_PHASE_SEND_CREDIT    9U
+#define AP6256_CYW43_IOCTL_PHASE_SEND_CREDIT_TIMEOUT 10U
+#define AP6256_CYW43_IOCTL_PHASE_ACCEPTED_ASYNC 11U
 
 #define AP6256_CYW43_SCAN_WAKE_NONE            0U
 #define AP6256_CYW43_SCAN_WAKE_WAKE_CTRL_READ  1U
@@ -79,6 +81,12 @@ typedef struct {
     uint32_t ioctl_id;
     int32_t ioctl_status;
     int32_t ioctl_poll;
+    uint32_t completed_ioctl_kind;
+    uint32_t completed_ioctl_cmd;
+    uint32_t completed_ioctl_iface;
+    uint32_t completed_ioctl_id;
+    int32_t completed_ioctl_status;
+    int32_t completed_ioctl_poll;
     uint8_t packet_pending;
     uint8_t packet_pending_source;
     uint8_t dat1_level;
@@ -249,6 +257,13 @@ void ap6256_cyw43_port_record_ioctl(uint32_t kind,
                                     uint32_t id,
                                     int32_t status,
                                     int32_t last_poll);
+void ap6256_cyw43_port_begin_ioctl(uint32_t kind,
+                                   uint32_t cmd,
+                                   uint32_t iface,
+                                   uint32_t len,
+                                   uint32_t id);
+void ap6256_cyw43_port_update_ioctl_poll(int32_t last_poll);
+void ap6256_cyw43_port_finish_ioctl(int32_t status, int32_t last_poll);
 void ap6256_cyw43_port_set_ioctl_phase(uint32_t phase);
 uint32_t ap6256_cyw43_port_last_ioctl_kind(void);
 uint32_t ap6256_cyw43_port_last_ioctl_cmd(void);
@@ -258,6 +273,12 @@ uint32_t ap6256_cyw43_port_last_ioctl_id(void);
 int32_t ap6256_cyw43_port_last_ioctl_status(void);
 int32_t ap6256_cyw43_port_last_ioctl_poll(void);
 uint32_t ap6256_cyw43_port_last_ioctl_phase(void);
+uint32_t ap6256_cyw43_port_last_completed_ioctl_kind(void);
+uint32_t ap6256_cyw43_port_last_completed_ioctl_cmd(void);
+uint32_t ap6256_cyw43_port_last_completed_ioctl_iface(void);
+uint32_t ap6256_cyw43_port_last_completed_ioctl_id(void);
+int32_t ap6256_cyw43_port_last_completed_ioctl_status(void);
+int32_t ap6256_cyw43_port_last_completed_ioctl_poll(void);
 void ap6256_cyw43_port_record_packet_pending(uint8_t packet_pending,
                                              uint8_t pending_source,
                                              uint8_t dat1_level,

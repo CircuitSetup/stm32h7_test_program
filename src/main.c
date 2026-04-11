@@ -465,7 +465,7 @@ static void app_print_wifi_breadcrumb(void)
                      (unsigned long)ap6256_cyw43_port_boot_reset_flags(),
                      breadcrumb_reset_flags,
                      (unsigned long)ap6256_cyw43_port_breadcrumb_reset_flags());
-    test_uart_printf("Pre-reset Wi-Fi diag: valid=%u bc=%s/%lu io=%lu/%lu id=%lu st=%ld poll=%ld pend=%u/%u c52=%lu/0x%08lX c53=%c/f%u/b%u/bs%lu/l%lu/st%ld/fr%u\r\n",
+    test_uart_printf("Pre-reset Wi-Fi diag: valid=%u bc=%s/%lu io_cur=%lu/%lu id=%lu st=%ld poll=%ld io_done=%lu/%lu id=%lu st=%ld poll=%ld pend=%u/%u c52=%lu/0x%08lX c53=%c/f%u/b%u/bs%lu/l%lu/st%ld/fr%u\r\n",
                      pre_reset.valid,
                      ap6256_cyw43_port_breadcrumb_name(pre_reset.breadcrumb_stage),
                      (unsigned long)pre_reset.breadcrumb_stage,
@@ -474,6 +474,11 @@ static void app_print_wifi_breadcrumb(void)
                      (unsigned long)pre_reset.ioctl_id,
                      (long)pre_reset.ioctl_status,
                      (long)pre_reset.ioctl_poll,
+                     (unsigned long)pre_reset.completed_ioctl_kind,
+                     (unsigned long)pre_reset.completed_ioctl_cmd,
+                     (unsigned long)pre_reset.completed_ioctl_id,
+                     (long)pre_reset.completed_ioctl_status,
+                     (long)pre_reset.completed_ioctl_poll,
                      pre_reset.packet_pending,
                      pre_reset.packet_pending_source,
                      (unsigned long)pre_reset.last_cmd,
@@ -537,8 +542,11 @@ static void app_init_task(void *argument)
 
 int main(void)
 {
+    uint32_t boot_reset_raw = RCC->RSR;
+
+    __HAL_RCC_CLEAR_RESET_FLAGS();
     HAL_Init();
-    ap6256_cyw43_port_capture_boot_reset_flags(RCC->RSR);
+    ap6256_cyw43_port_capture_boot_reset_flags(boot_reset_raw);
     SystemClock_Config();
 
     MX_GPIO_Init();
