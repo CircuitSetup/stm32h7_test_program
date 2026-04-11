@@ -22,6 +22,7 @@
 #define AP6256_CYW43_BREADCRUMB_MAGIC 0xA6256C43UL
 #define AP6256_CYW43_PRE_RESET_MAGIC 0xA6256D43UL
 #define AP6256_CYW43_PRE_RESET_THROTTLE_MS 25U
+#define AP6256_CYW43_NOISY_BREADCRUMB_PERSIST_MS 250U
 
 static osMutexId_t s_cyw43_mutex;
 static volatile uint8_t s_poll_pending;
@@ -131,6 +132,8 @@ static volatile int32_t s_cyw43_breadcrumb_detail;
 static volatile uint32_t s_cyw43_breadcrumb_tick_ms;
 static volatile uint32_t s_cyw43_breadcrumb_reset_flags;
 static volatile uint32_t s_cyw43_boot_reset_flags;
+static volatile uint32_t s_cyw43_last_persist_breadcrumb_stage;
+static volatile uint32_t s_cyw43_last_persist_breadcrumb_tick_ms;
 static volatile uint32_t s_cyw43_wait_no_packet_count;
 static volatile uint32_t s_cyw43_wait_recovery_count;
 static volatile uint32_t s_cyw43_wait_forced_probe_count;
@@ -172,6 +175,20 @@ static void ap6256_cyw43_append_reset_flag(char *buffer, size_t buffer_len, cons
 static uint8_t ap6256_cyw43_pre_reset_valid_raw(void)
 {
     return (RTC->BKP8R == AP6256_CYW43_PRE_RESET_MAGIC) ? 1U : 0U;
+}
+
+static uint8_t ap6256_cyw43_is_noisy_breadcrumb_stage(uint32_t stage)
+{
+    switch (stage) {
+    case AP6256_CYW43_BREADCRUMB_IOCTL_WAIT:
+    case AP6256_CYW43_BREADCRUMB_SCAN_WAIT:
+    case AP6256_CYW43_BREADCRUMB_CMD53_READ:
+    case AP6256_CYW43_BREADCRUMB_CMD53_WRITE:
+    case AP6256_CYW43_BREADCRUMB_CMD52:
+        return 1U;
+    default:
+        return 0U;
+    }
 }
 
 static void ap6256_cyw43_port_persist_pre_reset_diag(uint8_t force)
@@ -310,11 +327,25 @@ void ap6256_cyw43_port_record_breadcrumb(uint32_t stage, int32_t detail)
 {
     uint32_t tick_ms = HAL_GetTick();
     uint32_t reset_flags = RCC->RSR;
+    uint8_t persist = 1U;
 
     s_cyw43_breadcrumb_stage = stage;
     s_cyw43_breadcrumb_detail = detail;
     s_cyw43_breadcrumb_tick_ms = tick_ms;
     s_cyw43_breadcrumb_reset_flags = reset_flags;
+
+    if ((ap6256_cyw43_is_noisy_breadcrumb_stage(stage) != 0U) &&
+        (detail >= 0) &&
+        (s_cyw43_last_persist_breadcrumb_stage == stage) &&
+        ((tick_ms - s_cyw43_last_persist_breadcrumb_tick_ms) < AP6256_CYW43_NOISY_BREADCRUMB_PERSIST_MS)) {
+        persist = 0U;
+    }
+
+    if (persist == 0U) {
+        return;
+    }
+    s_cyw43_last_persist_breadcrumb_stage = stage;
+    s_cyw43_last_persist_breadcrumb_tick_ms = tick_ms;
 
     ap6256_cyw43_enable_backup_access();
     RTC->BKP1R = AP6256_CYW43_BREADCRUMB_MAGIC;
@@ -731,6 +762,8 @@ void ap6256_cyw43_port_deinit(void)
     s_cyw43_send_credit = 0U;
     s_cyw43_send_synthetic_credit = 0U;
     s_cyw43_send_credit_status = 0;
+    s_cyw43_last_persist_breadcrumb_stage = AP6256_CYW43_BREADCRUMB_NONE;
+    s_cyw43_last_persist_breadcrumb_tick_ms = 0U;
 }
 
 void ap6256_cyw43_thread_enter(void)

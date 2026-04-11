@@ -1278,37 +1278,64 @@ static int sdpcm_process_rx_packet(cyw43_int_t *self, uint8_t *buf, size_t *out_
 #if !CYW43_USE_SPI // SDIO version follows
 
 static bool cyw43_ll_sdio_packet_pending(cyw43_int_t *self) {
+    static uint32_t s_ap6256_no_irq_probe_divider = 0U;
     uint8_t packet_pending = 0U;
     uint8_t pending_source = AP6256_CYW43_PACKET_SRC_NONE;
     uint32_t f1_int_status = 0U;
+    bool sample_f1_mailbox = false;
     int dat1_level = cyw43_cb_read_host_interrupt_pin(self->cb_data);
-    int cccr_int_pending = cyw43_read_reg_u8(self, BUS_FUNCTION, SDIOD_CCCR_INTPEND);
+    int cccr_int_pending = -1;
     int32_t status = 0;
 
+    if (dat1_level == host_interrupt_pin_active) {
+        packet_pending = 1U;
+        pending_source = AP6256_CYW43_PACKET_SRC_DAT1;
+        sample_f1_mailbox = true;
+        s_ap6256_no_irq_probe_divider = 0U;
+    } else {
+        /*
+         * DAT1 is the in-band interrupt source for SDIO. In the common
+         * no-packet path, avoid hammering CMD52 INTPEND reads every poll.
+         * Keep a sparse periodic probe to catch any rare missed DAT1 edge.
+         */
+        if (++s_ap6256_no_irq_probe_divider < 16U) {
+            ap6256_cyw43_port_record_packet_pending(0U,
+                                                    AP6256_CYW43_PACKET_SRC_NONE,
+                                                    (dat1_level >= 0) ? (uint8_t)dat1_level : 0xFFU,
+                                                    0xFFU,
+                                                    0U,
+                                                    0);
+            return false;
+        }
+        s_ap6256_no_irq_probe_divider = 0U;
+    }
+
+    cccr_int_pending = cyw43_read_reg_u8(self, BUS_FUNCTION, SDIOD_CCCR_INTPEND);
     if (cccr_int_pending < 0) {
         status = cccr_int_pending;
         pending_source = AP6256_CYW43_PACKET_SRC_ERROR;
     }
 
-    if (dat1_level == host_interrupt_pin_active) {
-        packet_pending = 1U;
-        pending_source = AP6256_CYW43_PACKET_SRC_DAT1;
-    }
-
     if ((cccr_int_pending >= 0) && ((cccr_int_pending & SDIO_FUNC_ENABLE_2) != 0)) {
         packet_pending = 1U;
         pending_source = AP6256_CYW43_PACKET_SRC_CCCR_F2;
+        sample_f1_mailbox = true;
+    }
+
+    if ((cccr_int_pending >= 0) && ((cccr_int_pending & SDIO_FUNC_ENABLE_1) != 0)) {
+        sample_f1_mailbox = true;
     }
 
     /*
-     * Some Broadcom parts signal a host-mailbox interrupt in F1 before the F2
-     * packet is visible in CCCR INTPEND. Use this as a legal reason to try one
-     * F2 SDPCM header read, but only after cheaper DAT1/CCCR checks are sampled.
+     * Avoid unconditional backplane reads in the no-pending fast path.
+     * Only sample F1 mailbox when DAT1/CCCR indicates possible work.
      */
-    f1_int_status = cyw43_read_backplane(self, SDIO_INT_STATUS, 4);
-    if ((f1_int_status & I_HMB_SW_MASK) != 0U) {
-        packet_pending = 1U;
-        pending_source = AP6256_CYW43_PACKET_SRC_F1_MAILBOX;
+    if (sample_f1_mailbox) {
+        f1_int_status = cyw43_read_backplane(self, SDIO_INT_STATUS, 4);
+        if ((f1_int_status & I_HMB_SW_MASK) != 0U) {
+            packet_pending = 1U;
+            pending_source = AP6256_CYW43_PACKET_SRC_F1_MAILBOX;
+        }
     }
 
     if ((packet_pending == 0U) && (pending_source != AP6256_CYW43_PACKET_SRC_ERROR)) {
@@ -1656,6 +1683,27 @@ send_request:
                                        ret,
                                        ret);
         return ret;
+    }
+
+    if (allow_scan_resend) {
+        /*
+         * ESCAN start is handled asynchronously on this target. Do not block
+         * scan start on a synchronous control-response packet.
+         */
+        ap6256_cyw43_port_set_ioctl_phase(AP6256_CYW43_IOCTL_PHASE_ACCEPTED_ASYNC);
+        ap6256_cyw43_port_finish_ioctl(1, -1);
+        ap6256_cyw43_port_set_ioctl_attempt_flags(recovery_attempted,
+                                                  forced_probe_attempted,
+                                                  resend_attempted);
+        ap6256_cyw43_port_record_ioctl(kind,
+                                       cmd,
+                                       iface,
+                                       (uint32_t)len,
+                                       self->wwd_sdpcm_requested_ioctl_id,
+                                       1,
+                                       -1);
+        ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_IOCTL_WAIT, 1);
+        return 0;
     }
 
     start = cyw43_hal_ticks_us();

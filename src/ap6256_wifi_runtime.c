@@ -952,7 +952,7 @@ void ap6256_wifi_runtime_poll(void)
 {
     int32_t rssi = 0;
 
-    if (s_wifi_runtime.initialized == 0U) {
+    if ((s_wifi_runtime.initialized == 0U) || (s_wifi_runtime.poll_paused != 0U)) {
         return;
     }
 
