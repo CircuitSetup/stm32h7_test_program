@@ -20,6 +20,12 @@
 #define AP6256_WIFI_MAX_SCAN_RESULTS      32U
 #define AP6256_WIFI_JOIN_TIMEOUT_MS       20000U
 #define AP6256_WIFI_SCAN_FORCE_5G         (-5)
+#define AP6256_WIFI_CHANNEL_5G_UNKNOWN    0xFFFFU
+#define AP6256_CYW43_IOCTL_SET_BAND       ((142U << 1U) | 1U)
+
+#ifndef AP6256_WIFI_ENABLE_FORCED_5G_SCAN
+#define AP6256_WIFI_ENABLE_FORCED_5G_SCAN 0
+#endif
 
 typedef struct {
     uint8_t valid;
@@ -55,6 +61,8 @@ static ap6256_wifi_runtime_state_t s_wifi_runtime;
 
 static const char *ap6256_wifi_runtime_packet_source_name(uint32_t source);
 static int ap6256_wifi_runtime_probe_associated_bssid(uint8_t bssid_out[6]);
+static int ap6256_wifi_runtime_set_ioctl_u32(uint32_t cmd, uint32_t value) __attribute__((unused));
+static bool ap6256_wifi_runtime_wait_for_scan_complete(uint32_t timeout_ms);
 
 static const uint32_t s_wifi_runtime_profiles[] = {
     AP6256_CYW43_PROFILE_BASELINE,
@@ -100,13 +108,16 @@ static const char *ap6256_wifi_runtime_security_name(uint8_t auth_mode)
 
 static uint8_t ap6256_wifi_runtime_channel_is_5g(uint16_t channel)
 {
-    return (channel > 14U) ? 1U : 0U;
+    return ((channel > 14U) || (channel == AP6256_WIFI_CHANNEL_5G_UNKNOWN)) ? 1U : 0U;
 }
 
 static const char *ap6256_wifi_runtime_channel_band_name(uint16_t channel)
 {
     if (channel == 0U) {
         return "n/a";
+    }
+    if (channel == AP6256_WIFI_CHANNEL_5G_UNKNOWN) {
+        return "5GHz?";
     }
     return (ap6256_wifi_runtime_channel_is_5g(channel) != 0U) ? "5GHz" : "2.4GHz";
 }
@@ -224,6 +235,29 @@ static uint8_t ap6256_wifi_runtime_has_5g_scan_result(void)
     return 0U;
 }
 
+static ap6256_wifi_scan_entry_t *ap6256_wifi_runtime_find_best_ssid_5g(const char *ssid)
+{
+    ap6256_wifi_scan_entry_t *best = NULL;
+
+    if (ssid == NULL) {
+        return NULL;
+    }
+
+    for (uint32_t i = 0U; i < AP6256_WIFI_MAX_SCAN_RESULTS; ++i) {
+        if ((s_wifi_runtime.scan[i].valid == 0U) ||
+            (ap6256_wifi_runtime_channel_is_5g(s_wifi_runtime.scan[i].channel) == 0U) ||
+            (strcmp(s_wifi_runtime.scan[i].ssid, ssid) != 0)) {
+            continue;
+        }
+
+        if ((best == NULL) || (s_wifi_runtime.scan[i].rssi > best->rssi)) {
+            best = &s_wifi_runtime.scan[i];
+        }
+    }
+
+    return best;
+}
+
 static void ap6256_wifi_runtime_sort_scan_results(void)
 {
     uint32_t i;
@@ -251,6 +285,50 @@ static void ap6256_wifi_runtime_sort_scan_results(void)
             s_wifi_runtime.last_scan_count++;
         }
     }
+}
+
+static int ap6256_wifi_runtime_add_manual_hidden_network(const char *ssid)
+{
+    size_t ssid_len;
+    uint32_t insert_index = AP6256_WIFI_MAX_SCAN_RESULTS;
+
+    if (ssid == NULL) {
+        return -1;
+    }
+
+    ssid_len = strnlen(ssid, sizeof(s_wifi_runtime.scan[0].ssid));
+    if ((ssid_len == 0U) || (ssid_len >= sizeof(s_wifi_runtime.scan[0].ssid))) {
+        return -1;
+    }
+
+    for (uint32_t i = 0U; i < AP6256_WIFI_MAX_SCAN_RESULTS; ++i) {
+        if ((s_wifi_runtime.scan[i].valid != 0U) &&
+            (strcmp(s_wifi_runtime.scan[i].ssid, ssid) == 0)) {
+            return (int)i;
+        }
+        if ((insert_index == AP6256_WIFI_MAX_SCAN_RESULTS) &&
+            (s_wifi_runtime.scan[i].valid == 0U)) {
+            insert_index = i;
+        }
+    }
+
+    if (insert_index >= AP6256_WIFI_MAX_SCAN_RESULTS) {
+        return -1;
+    }
+
+    memset(&s_wifi_runtime.scan[insert_index], 0, sizeof(s_wifi_runtime.scan[insert_index]));
+    s_wifi_runtime.scan[insert_index].valid = 1U;
+    s_wifi_runtime.scan[insert_index].secure = 1U;
+    s_wifi_runtime.scan[insert_index].auth_mode = 0x04U; /* WPA2-PSK */
+    s_wifi_runtime.scan[insert_index].ssid_len = (uint8_t)ssid_len;
+    memcpy(s_wifi_runtime.scan[insert_index].ssid, ssid, ssid_len);
+    s_wifi_runtime.scan[insert_index].ssid[ssid_len] = '\0';
+    s_wifi_runtime.scan[insert_index].channel = AP6256_WIFI_CHANNEL_5G_UNKNOWN;
+    s_wifi_runtime.scan[insert_index].rssi = -127;
+
+    s_wifi_runtime.last_scan_count = ap6256_wifi_runtime_count_scan_results();
+    test_uart_printf("[ INFO ] wifi.connect stage: manual hidden 5GHz SSID '%s'\r\n", ssid);
+    return (int)insert_index;
 }
 
 static void ap6256_wifi_runtime_print_scan_results(void)
@@ -287,11 +365,7 @@ static int ap6256_wifi_runtime_prompt_network_selection(void)
     uint32_t i;
     int line_len;
 
-    if (s_wifi_runtime.last_scan_count == 0U) {
-        return -1;
-    }
-
-    test_uart_write_str("Select Wi-Fi network number or SSID: ");
+    test_uart_write_str("Select Wi-Fi network number or SSID (hidden 5GHz SSID allowed): ");
     line_len = test_uart_read_line(line, sizeof(line), AP6256_WIFI_PROMPT_TIMEOUT_MS);
     if (line_len <= 0) {
         return -1;
@@ -310,7 +384,81 @@ static int ap6256_wifi_runtime_prompt_network_selection(void)
         }
     }
 
-    return -1;
+    return ap6256_wifi_runtime_add_manual_hidden_network(line);
+}
+
+static ap6256_wifi_scan_entry_t *ap6256_wifi_runtime_resolve_hidden_5g_selection(const char *ssid,
+                                                                                 char *detail,
+                                                                                 size_t detail_len)
+{
+    cyw43_wifi_scan_options_t opts;
+    ap6256_wifi_scan_entry_t *resolved;
+    int rc;
+
+    if ((ssid == NULL) || (ssid[0] == '\0')) {
+        return NULL;
+    }
+
+    test_uart_printf("[ INFO ] wifi.connect stage: directed hidden 5GHz scan ssid=%s\r\n", ssid);
+
+    ap6256_wifi_runtime_clear_scan_results();
+    memset(&opts, 0, sizeof(opts));
+    opts.scan_type = 0;
+    opts.channel_num = AP6256_WIFI_SCAN_FORCE_5G;
+    opts.ssid_len = (uint32_t)strnlen(ssid, sizeof(opts.ssid));
+    if ((opts.ssid_len == 0U) || (opts.ssid_len > sizeof(opts.ssid))) {
+        (void)snprintf(detail, detail_len, "Invalid hidden 5GHz SSID '%s'.", ssid);
+        return NULL;
+    }
+    memcpy(opts.ssid, ssid, opts.ssid_len);
+
+    rc = cyw43_wifi_scan(&cyw43_state, &opts, NULL, ap6256_wifi_runtime_scan_cb);
+    if (rc != 0) {
+        cyw43_state.wifi_scan_state = 0;
+        cyw43_state.wifi_scan_cb = NULL;
+        cyw43_state.wifi_scan_env = NULL;
+        (void)snprintf(detail,
+                       detail_len,
+                       "Directed 5GHz scan for hidden SSID '%s' failed to start (rc=%d).",
+                       ssid,
+                       rc);
+        return NULL;
+    }
+
+    if (!ap6256_wifi_runtime_wait_for_scan_complete(AP6256_WIFI_SCAN_TIMEOUT_MS)) {
+        cyw43_state.wifi_scan_state = 0;
+        cyw43_state.wifi_scan_cb = NULL;
+        cyw43_state.wifi_scan_env = NULL;
+        (void)snprintf(detail,
+                       detail_len,
+                       "Hidden 5GHz SSID '%s' did not respond during directed scan.",
+                       ssid);
+        return NULL;
+    }
+
+    cyw43_state.wifi_scan_state = 0;
+    cyw43_state.wifi_scan_cb = NULL;
+    cyw43_state.wifi_scan_env = NULL;
+    ap6256_wifi_runtime_sort_scan_results();
+    resolved = ap6256_wifi_runtime_find_best_ssid_5g(ssid);
+    if (resolved == NULL) {
+        (void)snprintf(detail,
+                       detail_len,
+                       "Hidden 5GHz SSID '%s' was not found; join was not attempted.",
+                       ssid);
+        return NULL;
+    }
+
+    test_uart_printf("[ INFO ] wifi.connect stage: hidden 5GHz resolved bssid=%02X:%02X:%02X:%02X:%02X:%02X ch=%u rssi=%d\r\n",
+                     resolved->bssid[0],
+                     resolved->bssid[1],
+                     resolved->bssid[2],
+                     resolved->bssid[3],
+                     resolved->bssid[4],
+                     resolved->bssid[5],
+                     resolved->channel,
+                     (int)resolved->rssi);
+    return resolved;
 }
 
 static bool ap6256_wifi_runtime_wait_for_scan_complete(uint32_t timeout_ms)
@@ -357,6 +505,7 @@ static bool ap6256_wifi_runtime_wait_for_link(uint32_t timeout_ms, int *final_st
 {
     uint32_t start_ms = HAL_GetTick();
     uint32_t last_diag_ms = start_ms;
+    uint8_t assoc_probe_done = 0U;
 
     if (final_status != NULL) {
         *final_status = CYW43_LINK_DOWN;
@@ -387,9 +536,22 @@ static bool ap6256_wifi_runtime_wait_for_link(uint32_t timeout_ms, int *final_st
 
         if ((now_ms - last_diag_ms) >= 2000U) {
             uint8_t assoc_bssid[6];
-            int assoc_seen = ap6256_wifi_runtime_probe_associated_bssid(assoc_bssid);
-            if (assoc_seen != 0) {
-                cyw43_cb_tcpip_set_link_up(&cyw43_state, CYW43_ITF_STA);
+            int assoc_seen = 0;
+
+            memset(assoc_bssid, 0, sizeof(assoc_bssid));
+            /*
+             * GET_BSSID is a useful AP6256 fallback when firmware associates
+             * without producing the exact CYW43 event sequence, but probing too
+             * early can return a firmware "not associated" status while the
+             * join is still in progress. Keep it delayed and one-shot so slow
+             * or rejected APs fail cleanly instead of destabilising the run.
+             */
+            if (((now_ms - start_ms) >= 4000U) && (assoc_probe_done == 0U)) {
+                assoc_probe_done = 1U;
+                assoc_seen = ap6256_wifi_runtime_probe_associated_bssid(assoc_bssid);
+                if (assoc_seen != 0) {
+                    cyw43_cb_tcpip_set_link_up(&cyw43_state, CYW43_ITF_STA);
+                }
             }
             last_diag_ms = now_ms;
             test_uart_printf("[ INFO ] wifi.connect stage: join wait %lums status=%d join=0x%08lX assoc=%d %02X:%02X:%02X:%02X:%02X:%02X ev=%lu/%lu/%lu r=%lu f=0x%lX\r\n",
@@ -1031,7 +1193,6 @@ static int ap6256_wifi_runtime_bssid_is_valid(const uint8_t *bssid)
 #define AP6256_CYW43_IOCTL_GET_BSSID (0x2EU)
 #define AP6256_CYW43_IOCTL_GET_VAR   (0x20CU)
 #define AP6256_CYW43_IOCTL_SET_VAR   (0x20FU)
-#define AP6256_CYW43_IOCTL_SET_BAND  ((142U << 1U) | 1U)
 
 static uint32_t ap6256_wifi_runtime_get_le32(const uint8_t *buf)
 {
@@ -1277,7 +1438,6 @@ static ap6256_status_t ap6256_wifi_runtime_run_common(const char *ssid,
                          ap6256_wifi_runtime_auth_name(auth_type));
         (void)bssid;
         const uint8_t *join_bssid = NULL;
-        (void)channel;
         uint32_t join_channel = CYW43_CHANNEL_NONE;
 
         rc = cyw43_wifi_join(&cyw43_state,
@@ -1542,6 +1702,13 @@ scan_start_retry:
         osDelay(20U);
     }
 
+    /*
+     * Keep the extra forced-band scan as an opt-in bench diagnostic. Hidden
+     * 5 GHz SSIDs are handled by the manual selection path below; forcing a
+     * second scan before the operator chooses a network can perturb the next
+     * join control path on AP6256.
+     */
+#if AP6256_WIFI_ENABLE_FORCED_5G_SCAN
     if (ap6256_wifi_runtime_has_5g_scan_result() == 0U) {
         int band_rc;
         uint8_t band_recovery_needed = 0U;
@@ -1599,6 +1766,11 @@ scan_start_retry:
             }
         }
     }
+#else
+    if (ap6256_wifi_runtime_has_5g_scan_result() == 0U) {
+        test_uart_write_str("[ INFO ] wifi.connect stage: no visible 5GHz BSSID; hidden 5GHz SSID may be entered manually\r\n");
+    }
+#endif
 
     ap6256_wifi_runtime_sort_scan_results();
     ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_SCAN_COMPLETE,
@@ -1630,6 +1802,18 @@ scan_start_retry:
     }
 
     selected = &s_wifi_runtime.scan[(uint32_t)scan_index];
+    if (selected->channel == AP6256_WIFI_CHANNEL_5G_UNKNOWN) {
+        char hidden_ssid[33];
+
+        (void)snprintf(hidden_ssid, sizeof(hidden_ssid), "%s", selected->ssid);
+        selected = ap6256_wifi_runtime_resolve_hidden_5g_selection(hidden_ssid, detail, detail_len);
+        if (selected == NULL) {
+            ap6256_connectivity_set_wifi_note(detail);
+            ap6256_wifi_runtime_release_owner_with_breadcrumb(AP6256_CYW43_BREADCRUMB_RELEASE,
+                                                              AP6256_STATUS_TIMEOUT);
+            return AP6256_STATUS_TIMEOUT;
+        }
+    }
     if ((selected->auth_mode != 0U) && ((selected->auth_mode & 0x04U) == 0U)) {
         (void)snprintf(detail,
                        detail_len,
