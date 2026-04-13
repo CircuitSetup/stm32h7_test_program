@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define AP6256_WIFI_SCAN_TIMEOUT_MS           5000U
+#define AP6256_WIFI_SCAN_TIMEOUT_MS          20000U
 #define AP6256_WIFI_DHCP_TIMEOUT_MS          30000U
 #define AP6256_WIFI_PROMPT_TIMEOUT_MS        60000U
 

@@ -228,6 +228,20 @@ static void cyw43_xxd(size_t len, const uint8_t *buf) {
 #define AP6256_AI_MAX_CORES           16U
 #define AP6256_RESET_VECTOR_ADDRESS   0x00000000UL
 
+/*
+ * BCM43456 reports D11ac-style chanspecs (for example 2.4 GHz channel 6 as
+ * 0x1006). Use the same compact 20 MHz chanspec encoding for explicit scan
+ * and directed-join channel lists.
+ */
+#define AP6256_CH_MAX_2G_CHANNEL          14U
+#define AP6256_CHSPEC_D11AC_BW_20         0x1000U
+#define AP6256_CHSPEC_D11AC_BND_2G        0x0000U
+#define AP6256_CHSPEC_D11AC_BND_5G        0xC000U
+#define AP6256_CHSPEC_20MHZ(channel) \
+    ((uint16_t)((channel) | AP6256_CHSPEC_D11AC_BW_20 | \
+                (((channel) <= AP6256_CH_MAX_2G_CHANNEL) ? \
+                    AP6256_CHSPEC_D11AC_BND_2G : AP6256_CHSPEC_D11AC_BND_5G)))
+
 #ifndef AP6256_CYW43_FORCE_SDIO_POLL
 #define AP6256_CYW43_FORCE_SDIO_POLL 0
 #endif
@@ -3927,8 +3941,88 @@ static void ap6256_cyw43_escan_abort(cyw43_int_t *self) {
     ap6256_cyw43_drain_pending_packets(self);
 }
 
+#define AP6256_ESCAN_CHANNEL_COUNT 38U
+#define AP6256_ESCAN_5G_CHANNEL_COUNT 25U
+#define AP6256_ESCAN_FORCE_5G_CHANNEL_NUM (-5)
+
+typedef struct _ap6256_cyw43_escan_options_t {
+    uint32_t version;
+    uint16_t action;
+    uint16_t sync_id;
+    uint32_t ssid_len;
+    uint8_t ssid[32];
+    uint8_t bssid[6];
+    int8_t bss_type;
+    int8_t scan_type;
+    int32_t nprobes;
+    int32_t active_time;
+    int32_t passive_time;
+    int32_t home_time;
+    int32_t channel_num;
+    uint16_t channel_list[AP6256_ESCAN_CHANNEL_COUNT];
+} ap6256_cyw43_escan_options_t;
+
+static uint32_t ap6256_cyw43_scan_channel_list(uint16_t *dst, uint8_t force_5g)
+{
+    static const uint8_t all_channels[AP6256_ESCAN_CHANNEL_COUNT] = {
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+        36, 40, 44, 48,
+        52, 56, 60, 64,
+        100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144,
+        149, 153, 157, 161, 165,
+    };
+    static const uint8_t channels_5g[AP6256_ESCAN_5G_CHANNEL_COUNT] = {
+        36, 40, 44, 48,
+        52, 56, 60, 64,
+        100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144,
+        149, 153, 157, 161, 165,
+    };
+    const uint8_t *channels = (force_5g != 0U) ? channels_5g : all_channels;
+    uint32_t count = (force_5g != 0U) ? AP6256_ESCAN_5G_CHANNEL_COUNT : AP6256_ESCAN_CHANNEL_COUNT;
+
+    for (uint32_t i = 0U; i < count; ++i) {
+        dst[i] = AP6256_CHSPEC_20MHZ(channels[i]);
+    }
+
+    return count;
+}
+
+static void ap6256_cyw43_populate_dual_band_scan(ap6256_cyw43_escan_options_t *scan,
+                                                 uint16_t sync_id,
+                                                 const cyw43_wifi_scan_options_t *opts) {
+    uint8_t force_5g = ((opts != NULL) &&
+                        (opts->channel_num == AP6256_ESCAN_FORCE_5G_CHANNEL_NUM)) ? 1U : 0U;
+    uint32_t channel_count;
+
+    memset(scan, 0, sizeof(*scan));
+    scan->version = 1; // ESCAN_REQ_VERSION
+    scan->action = 1; // WL_SCAN_ACTION_START
+    scan->sync_id = sync_id;
+    memset(scan->bssid, 0xff, sizeof(scan->bssid));
+    scan->bss_type = 2; // WICED_BSS_TYPE_ANY
+    scan->scan_type = (opts != NULL) ? opts->scan_type : 0;
+    if ((opts != NULL) && (opts->ssid_len > 0U) && (opts->ssid_len <= sizeof(scan->ssid))) {
+        scan->ssid_len = opts->ssid_len;
+        memcpy(scan->ssid, opts->ssid, opts->ssid_len);
+    }
+
+    /*
+     * brcmfmac leaves dwell/probe values at firmware defaults for normal
+     * broadcast escan. That is safer for 5 GHz/passive channels than the old
+     * short AP6256 dwell times, which only found the 2.4 GHz Linksys BSSIDs.
+     */
+    scan->nprobes = -1;
+    scan->active_time = -1;
+    scan->passive_time = -1;
+    scan->home_time = -1;
+
+    channel_count = ap6256_cyw43_scan_channel_list(scan->channel_list, force_5g);
+    scan->channel_num = (int32_t)channel_count;
+}
+
 int cyw43_ll_wifi_scan(cyw43_ll_t *self_in, cyw43_wifi_scan_options_t *opts) {
     cyw43_int_t *self = CYW_INT_FROM_LL(self_in);
+    ap6256_cyw43_escan_options_t scan;
     static uint16_t s_scan_sync_id;
     uint16_t sync_id = (uint16_t)(s_scan_sync_id + 1U);
     int wake_ret;
@@ -3937,18 +4031,7 @@ int cyw43_ll_wifi_scan(cyw43_ll_t *self_in, cyw43_wifi_scan_options_t *opts) {
         sync_id = 1U;
     }
     s_scan_sync_id = sync_id;
-
-    opts->version = 1; // ESCAN_REQ_VERSION
-    opts->action = 1; // WL_SCAN_ACTION_START
-    opts->_ = sync_id; // escan sync_id
-    memset(opts->bssid, 0xff, sizeof(opts->bssid));
-    opts->bss_type = 2; // WICED_BSS_TYPE_ANY
-    opts->nprobes = 2;
-    opts->active_time = 80;
-    opts->passive_time = 120;
-    opts->home_time = 40;
-    opts->channel_num = 0;
-    opts->channel_list[0] = 0;
+    ap6256_cyw43_populate_dual_band_scan(&scan, sync_id, opts);
     wake_ret = ap6256_cyw43_scan_wake(self, self_in);
     if (wake_ret != 0) {
         ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_SCAN_WAKE_EXIT,
@@ -3963,7 +4046,7 @@ int cyw43_ll_wifi_scan(cyw43_ll_t *self_in, cyw43_wifi_scan_options_t *opts) {
         return wake_ret;
     }
     ap6256_cyw43_drain_pending_packets(self);
-    wake_ret = cyw43_write_iovar_n(self, "escan", sizeof(cyw43_wifi_scan_options_t), opts, WWD_STA_INTERFACE);
+    wake_ret = cyw43_write_iovar_n(self, "escan", sizeof(scan), &scan, WWD_STA_INTERFACE);
     ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_SCAN_RETURN, wake_ret);
     return wake_ret;
 }
@@ -4133,15 +4216,10 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
         cyw43_put_le32(buf + 4 + 32 + 12, -1); // passive_time
         cyw43_put_le32(buf + 4 + 32 + 16, -1); // home_time
 
-        // assoc params
-        #define WL_CHANSPEC_BW_20        0x1000
-        #define WL_CHANSPEC_CTL_SB_LLL      0x0000
-        #define WL_CHANSPEC_CTL_SB_NONE     WL_CHANSPEC_CTL_SB_LLL
-        #define WL_CHANSPEC_BAND_2G        0x0000
         memcpy(buf + 4 + 32 + 20, bssid, 6);
         if (channel != CYW43_CHANNEL_NONE) {
             cyw43_put_le32(buf + 4 + 32 + 20 + 8, 1); // chanspec_num
-            uint16_t chspec = channel | WL_CHANSPEC_BW_20 | WL_CHANSPEC_CTL_SB_NONE | WL_CHANSPEC_BAND_2G;
+            uint16_t chspec = AP6256_CHSPEC_20MHZ(channel);
             cyw43_put_le16(buf + 4 + 32 + 20 + 12, chspec); // chanspec_list
         }
 

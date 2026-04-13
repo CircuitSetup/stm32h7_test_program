@@ -17,8 +17,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define AP6256_WIFI_MAX_SCAN_RESULTS      16U
+#define AP6256_WIFI_MAX_SCAN_RESULTS      32U
 #define AP6256_WIFI_JOIN_TIMEOUT_MS       20000U
+#define AP6256_WIFI_SCAN_FORCE_5G         (-5)
 
 typedef struct {
     uint8_t valid;
@@ -110,6 +111,11 @@ static const char *ap6256_wifi_runtime_channel_band_name(uint16_t channel)
     return (ap6256_wifi_runtime_channel_is_5g(channel) != 0U) ? "5GHz" : "2.4GHz";
 }
 
+static int ap6256_wifi_runtime_bssid_matches(const uint8_t lhs[6], const uint8_t rhs[6])
+{
+    return (memcmp(lhs, rhs, 6U) == 0) ? 1 : 0;
+}
+
 static ap6256_wifi_security_t ap6256_wifi_runtime_state_security(void)
 {
     return (s_wifi_runtime.cached_secure != 0U) ? AP6256_WIFI_SECURITY_WPA2_PSK
@@ -157,8 +163,7 @@ static int ap6256_wifi_runtime_scan_cb(void *env, const cyw43_ev_scan_result_t *
 
     for (i = 0U; i < AP6256_WIFI_MAX_SCAN_RESULTS; ++i) {
         if ((s_wifi_runtime.scan[i].valid != 0U) &&
-            (s_wifi_runtime.scan[i].ssid_len == result->ssid_len) &&
-            (memcmp(s_wifi_runtime.scan[i].ssid, result->ssid, result->ssid_len) == 0)) {
+            (ap6256_wifi_runtime_bssid_matches(s_wifi_runtime.scan[i].bssid, result->bssid) != 0)) {
             insert_index = i;
             break;
         }
@@ -205,6 +210,20 @@ static uint32_t ap6256_wifi_runtime_count_scan_results(void)
     return count;
 }
 
+static uint8_t ap6256_wifi_runtime_has_5g_scan_result(void)
+{
+    uint32_t i;
+
+    for (i = 0U; i < AP6256_WIFI_MAX_SCAN_RESULTS; ++i) {
+        if ((s_wifi_runtime.scan[i].valid != 0U) &&
+            (ap6256_wifi_runtime_channel_is_5g(s_wifi_runtime.scan[i].channel) != 0U)) {
+            return 1U;
+        }
+    }
+
+    return 0U;
+}
+
 static void ap6256_wifi_runtime_sort_scan_results(void)
 {
     uint32_t i;
@@ -244,12 +263,18 @@ static void ap6256_wifi_runtime_print_scan_results(void)
             continue;
         }
 
-        test_uart_printf("  %lu. %-32s RSSI=%d ch=%u/%s sec=%s\r\n",
+        test_uart_printf("  %lu. %-32s RSSI=%d ch=%u/%s bssid=%02X:%02X:%02X:%02X:%02X:%02X sec=%s\r\n",
                          (unsigned long)(i + 1U),
                          s_wifi_runtime.scan[i].ssid,
                          (int)s_wifi_runtime.scan[i].rssi,
                          s_wifi_runtime.scan[i].channel,
                          ap6256_wifi_runtime_channel_band_name(s_wifi_runtime.scan[i].channel),
+                         s_wifi_runtime.scan[i].bssid[0],
+                         s_wifi_runtime.scan[i].bssid[1],
+                         s_wifi_runtime.scan[i].bssid[2],
+                         s_wifi_runtime.scan[i].bssid[3],
+                         s_wifi_runtime.scan[i].bssid[4],
+                         s_wifi_runtime.scan[i].bssid[5],
                          ap6256_wifi_runtime_security_name(s_wifi_runtime.scan[i].auth_mode));
     }
 }
@@ -1005,6 +1030,8 @@ static int ap6256_wifi_runtime_bssid_is_valid(const uint8_t *bssid)
 
 #define AP6256_CYW43_IOCTL_GET_BSSID (0x2EU)
 #define AP6256_CYW43_IOCTL_GET_VAR   (0x20CU)
+#define AP6256_CYW43_IOCTL_SET_VAR   (0x20FU)
+#define AP6256_CYW43_IOCTL_SET_BAND  ((142U << 1U) | 1U)
 
 static uint32_t ap6256_wifi_runtime_get_le32(const uint8_t *buf)
 {
@@ -1012,6 +1039,14 @@ static uint32_t ap6256_wifi_runtime_get_le32(const uint8_t *buf)
            ((uint32_t)buf[1] << 8U) |
            ((uint32_t)buf[2] << 16U) |
            ((uint32_t)buf[3] << 24U);
+}
+
+static void ap6256_wifi_runtime_put_le32(uint8_t *buf, uint32_t value)
+{
+    buf[0] = (uint8_t)(value & 0xFFU);
+    buf[1] = (uint8_t)((value >> 8) & 0xFFU);
+    buf[2] = (uint8_t)((value >> 16) & 0xFFU);
+    buf[3] = (uint8_t)((value >> 24) & 0xFFU);
 }
 
 static int ap6256_wifi_runtime_probe_associated_bssid(uint8_t bssid_out[6])
@@ -1073,6 +1108,18 @@ static int ap6256_wifi_runtime_get_iovar_u32(const char *name, uint32_t *value)
         *value = ap6256_wifi_runtime_get_le32(buf);
     }
     return rc;
+}
+
+static int ap6256_wifi_runtime_set_ioctl_u32(uint32_t cmd, uint32_t value)
+{
+    uint8_t buf[4];
+
+    ap6256_wifi_runtime_put_le32(buf, value);
+    return cyw43_ioctl(&cyw43_state,
+                       cmd,
+                       sizeof(buf),
+                       buf,
+                       CYW43_ITF_STA);
 }
 
 static void ap6256_wifi_runtime_copy_printable(char *dst, size_t dst_len, const uint8_t *src, size_t src_len)
@@ -1494,6 +1541,65 @@ scan_start_retry:
         ap6256_cyw43_port_poll();
         osDelay(20U);
     }
+
+    if (ap6256_wifi_runtime_has_5g_scan_result() == 0U) {
+        int band_rc;
+        uint8_t band_recovery_needed = 0U;
+
+        test_uart_write_str("[ INFO ] wifi.connect stage: start 5GHz scan\r\n");
+        band_rc = ap6256_wifi_runtime_set_ioctl_u32(AP6256_CYW43_IOCTL_SET_BAND, 1U); /* WLC_BAND_5G */
+        test_uart_printf("[ INFO ] wifi.connect stage: force 5GHz band rc=%d\r\n", band_rc);
+        if (band_rc == 0) {
+            memset(&opts, 0, sizeof(opts));
+            opts.scan_type = 0;
+            opts.channel_num = AP6256_WIFI_SCAN_FORCE_5G;
+            if (s_wifi_runtime.has_cached_profile != 0U) {
+                size_t cached_len = strlen(s_wifi_runtime.cached_ssid);
+
+                if ((cached_len > 0U) && (cached_len <= sizeof(opts.ssid))) {
+                    opts.ssid_len = (uint32_t)cached_len;
+                    memcpy(opts.ssid, s_wifi_runtime.cached_ssid, cached_len);
+                    test_uart_printf("[ INFO ] wifi.connect stage: directed 5GHz scan ssid=%s\r\n",
+                                     s_wifi_runtime.cached_ssid);
+                }
+            }
+            rc = cyw43_wifi_scan(&cyw43_state, &opts, NULL, ap6256_wifi_runtime_scan_cb);
+            if (rc == 0) {
+                ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_SCAN_ACCEPTED, 5);
+                if (!ap6256_wifi_runtime_wait_for_scan_complete(AP6256_WIFI_SCAN_TIMEOUT_MS)) {
+                    test_uart_write_str("[ INFO ] wifi.connect stage: 5GHz scan timeout\r\n");
+                }
+                cyw43_state.wifi_scan_state = 0;
+                cyw43_state.wifi_scan_cb = NULL;
+                cyw43_state.wifi_scan_env = NULL;
+                for (uint32_t drain_ms = 0U; drain_ms < 500U; drain_ms += 20U) {
+                    ap6256_cyw43_port_poll();
+                    osDelay(20U);
+                }
+            } else {
+                test_uart_printf("[ INFO ] wifi.connect stage: 5GHz scan start failed rc=%d\r\n", rc);
+            }
+        } else {
+            test_uart_write_str("[ INFO ] wifi.connect stage: skip 5GHz scan after band switch failure\r\n");
+            band_recovery_needed = 1U;
+        }
+        band_rc = ap6256_wifi_runtime_set_ioctl_u32(AP6256_CYW43_IOCTL_SET_BAND, 0U); /* WLC_BAND_AUTO */
+        test_uart_printf("[ INFO ] wifi.connect stage: restore auto band rc=%d\r\n", band_rc);
+        if (band_rc != 0) {
+            band_recovery_needed = 1U;
+        }
+        if (band_recovery_needed != 0U) {
+            test_uart_write_str("[ INFO ] wifi.connect stage: recover after band restore failure\r\n");
+            ap6256_wifi_runtime_suspend();
+            if (!ap6256_wifi_runtime_ensure_ready(detail, detail_len)) {
+                ap6256_connectivity_set_wifi_note(detail);
+                ap6256_wifi_runtime_release_owner_with_breadcrumb(AP6256_CYW43_BREADCRUMB_RELEASE,
+                                                                  AP6256_STATUS_IO_ERROR);
+                return AP6256_STATUS_IO_ERROR;
+            }
+        }
+    }
+
     ap6256_wifi_runtime_sort_scan_results();
     ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_SCAN_COMPLETE,
                                         s_wifi_runtime.last_scan_count);
