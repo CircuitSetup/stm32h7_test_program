@@ -93,7 +93,7 @@ static volatile uint8_t s_cyw43_backplane_is_write;
 static volatile uint32_t s_cyw43_backplane_address;
 static volatile uint8_t s_cyw43_backplane_width_bytes;
 static volatile int32_t s_cyw43_backplane_status;
-static volatile uint8_t s_cyw43_reference_nvram_enabled;
+static volatile uint8_t s_cyw43_reference_nvram_enabled = 0U;
 static volatile uint32_t s_cyw43_last_async_event_type;
 static volatile uint32_t s_cyw43_last_async_event_status;
 static volatile uint32_t s_cyw43_last_async_event_reason;

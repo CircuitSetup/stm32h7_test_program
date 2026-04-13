@@ -329,6 +329,36 @@ void ap6256_connectivity_set_wifi_ip(const char *ip,
     s_wifi_state.last_update_ms = HAL_GetTick();
 }
 
+void ap6256_connectivity_set_wifi_phy_diag(uint8_t valid,
+                                           uint8_t assoc_channel,
+                                           uint8_t assoc_5g,
+                                           uint8_t wifi5_capable,
+                                           uint8_t assoc_wifi5,
+                                           uint32_t assoc_chanspec,
+                                           uint32_t vhtmode,
+                                           uint32_t nmode,
+                                           uint32_t band,
+                                           const char *fw_version,
+                                           const char *caps)
+{
+    s_wifi_state.runtime_phy_valid = valid;
+    s_wifi_state.runtime_assoc_channel = assoc_channel;
+    s_wifi_state.runtime_assoc_5g = assoc_5g;
+    s_wifi_state.runtime_wifi5_capable = wifi5_capable;
+    s_wifi_state.runtime_assoc_wifi5 = assoc_wifi5;
+    s_wifi_state.runtime_assoc_chanspec = assoc_chanspec;
+    s_wifi_state.runtime_vhtmode = vhtmode;
+    s_wifi_state.runtime_nmode = nmode;
+    s_wifi_state.runtime_band = band;
+    ap6256_connectivity_copy_text(s_wifi_state.runtime_fw_version,
+                                  sizeof(s_wifi_state.runtime_fw_version),
+                                  fw_version);
+    ap6256_connectivity_copy_text(s_wifi_state.runtime_caps,
+                                  sizeof(s_wifi_state.runtime_caps),
+                                  caps);
+    s_wifi_state.last_update_ms = HAL_GetTick();
+}
+
 void ap6256_connectivity_set_wifi_compat(uint32_t chip_id_raw,
                                          uint32_t ram_base_addr,
                                          uint32_t ram_size_bytes,
@@ -598,6 +628,20 @@ void ap6256_connectivity_print_wifi_info(void)
                      (state->leased_ip[0] != '\0') ? state->leased_ip : "n/a",
                      (state->leased_mask[0] != '\0') ? state->leased_mask : "n/a",
                      (state->leased_gateway[0] != '\0') ? state->leased_gateway : "n/a");
+    test_uart_printf("  Wi-Fi PHY: valid=%u assoc_ch=%u band=%s chanspec=0x%04lX nmode=%lu vhtmode=%lu wifi5_capable=%u assoc_wifi5=%u wl_band=%lu\r\n",
+                     state->runtime_phy_valid,
+                     state->runtime_assoc_channel,
+                     (state->runtime_assoc_5g != 0U) ? "5GHz" :
+                         ((state->runtime_assoc_channel != 0U) ? "2.4GHz" : "n/a"),
+                     (unsigned long)state->runtime_assoc_chanspec,
+                     (unsigned long)state->runtime_nmode,
+                     (unsigned long)state->runtime_vhtmode,
+                     state->runtime_wifi5_capable,
+                     state->runtime_assoc_wifi5,
+                     (unsigned long)state->runtime_band);
+    test_uart_printf("  Wi-Fi FW/caps: ver='%s' caps='%s'\r\n",
+                     (state->runtime_fw_version[0] != '\0') ? state->runtime_fw_version : "n/a",
+                     (state->runtime_caps[0] != '\0') ? state->runtime_caps : "n/a");
     test_uart_printf("  CYW43 compat: chip=0x%04X rev=%u raw=0x%08lX rambase=0x%05lX ram=0x%05lX stage=%lu/%s profile=%s nvram=%s %lu/%lu footer=0x%08lX\r\n",
                      ap6256_cyw43_chip_id_from_raw(state->runtime_chip_id_raw),
                      ap6256_cyw43_chip_rev_from_raw(state->runtime_chip_id_raw),

@@ -30,6 +30,17 @@ typedef struct {
     char leased_ip[16];
     char leased_mask[16];
     char leased_gateway[16];
+    uint8_t runtime_phy_valid;
+    uint8_t runtime_assoc_channel;
+    uint8_t runtime_assoc_5g;
+    uint8_t runtime_wifi5_capable;
+    uint8_t runtime_assoc_wifi5;
+    uint32_t runtime_assoc_chanspec;
+    uint32_t runtime_vhtmode;
+    uint32_t runtime_nmode;
+    uint32_t runtime_band;
+    char runtime_fw_version[96];
+    char runtime_caps[128];
     uint32_t runtime_chip_id_raw;
     uint32_t runtime_ram_base_addr;
     uint32_t runtime_ram_size_bytes;
@@ -152,6 +163,17 @@ void ap6256_connectivity_set_wifi_ip(const char *ip,
                                      const char *mask,
                                      const char *gateway,
                                      uint8_t dhcp_bound);
+void ap6256_connectivity_set_wifi_phy_diag(uint8_t valid,
+                                           uint8_t assoc_channel,
+                                           uint8_t assoc_5g,
+                                           uint8_t wifi5_capable,
+                                           uint8_t assoc_wifi5,
+                                           uint32_t assoc_chanspec,
+                                           uint32_t vhtmode,
+                                           uint32_t nmode,
+                                           uint32_t band,
+                                           const char *fw_version,
+                                           const char *caps);
 void ap6256_connectivity_set_wifi_compat(uint32_t chip_id_raw,
                                          uint32_t ram_base_addr,
                                          uint32_t ram_size_bytes,

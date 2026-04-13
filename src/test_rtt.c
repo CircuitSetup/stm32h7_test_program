@@ -194,6 +194,7 @@ size_t test_rtt_read(uint8_t *data, size_t len)
     }
 
     down = &s_rtt_cb.aDown[0];
+    rtt_cache_invalidate((const void *)&down->RdOff, sizeof(down->RdOff));
     rd = down->RdOff;
 
     while (read_len < len) {
@@ -204,6 +205,7 @@ size_t test_rtt_read(uint8_t *data, size_t len)
             break;
         }
 
+        rtt_cache_invalidate(&down->pBuffer[rd], 1U);
         data[read_len] = (uint8_t)down->pBuffer[rd];
         rd++;
         if (rd >= down->SizeOfBuffer) {

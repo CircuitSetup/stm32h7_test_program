@@ -397,6 +397,15 @@ void cyw43_cb_process_async_event(void *cb_data, const cyw43_async_event_t *ev) 
             // Other failure setting SSID
             self->wifi_join_state = WIFI_JOIN_STATE_FAIL;
         }
+    } else if (ev->event_type == CYW43_EV_JOIN) {
+        if (ev->status == 0) {
+            // Some FullMAC firmwares report successful join before assoc/link.
+            self->wifi_join_state = (self->wifi_join_state & ~WIFI_JOIN_STATE_KIND_MASK) | WIFI_JOIN_STATE_ACTIVE;
+        } else if (ev->status == 3 && ev->reason == 0) {
+            self->wifi_join_state = WIFI_JOIN_STATE_NONET;
+        } else {
+            self->wifi_join_state = WIFI_JOIN_STATE_FAIL;
+        }
     } else if (ev->event_type == CYW43_EV_AUTH) {
         if (ev->status == 0) {
             if ((self->wifi_join_state & WIFI_JOIN_STATE_KIND_MASK) == WIFI_JOIN_STATE_BADAUTH) {
@@ -409,6 +418,19 @@ void cyw43_cb_process_async_event(void *cb_data, const cyw43_async_event_t *ev) 
         } else {
             // Cannot authenticate
             self->wifi_join_state = WIFI_JOIN_STATE_BADAUTH;
+        }
+    } else if (ev->event_type == CYW43_EV_ASSOC) {
+        if (ev->status == 0) {
+            /*
+             * BCM43456/AP6256 can surface association progress through ASSOC
+             * without the exact 43439 LINK event ordering. A successful assoc
+             * implies authentication and L2 link; WPA still waits for PSK_SUP.
+             */
+            self->wifi_join_state |= WIFI_JOIN_STATE_AUTH | WIFI_JOIN_STATE_LINK;
+        } else if (ev->status == 3 && ev->reason == 0) {
+            self->wifi_join_state = WIFI_JOIN_STATE_NONET;
+        } else {
+            self->wifi_join_state = WIFI_JOIN_STATE_FAIL;
         }
     } else if (ev->event_type == CYW43_EV_DEAUTH_IND) {
         if (ev->status == 0 && ev->reason == 2) {
@@ -693,17 +715,19 @@ int cyw43_wifi_join(cyw43_t *self, size_t ssid_len, const uint8_t *ssid, size_t 
         return ret;
     }
 
+    // Wait for responses: EV_AUTH, EV_LINK, EV_SET_SSID, EV_PSK_SUP.
+    // Set this before issuing the join so events delivered during the
+    // synchronous WLC_SET_SSID/join ioctl are not overwritten afterwards.
+    self->wifi_join_state = WIFI_JOIN_STATE_ACTIVE;
+    if (auth_type == CYW43_AUTH_OPEN) {
+        // For open security we don't need EV_PSK_SUP, so set that flag indicator now
+        self->wifi_join_state |= WIFI_JOIN_STATE_KEYED;
+    }
+
     ret = cyw43_ll_wifi_join(&self->cyw43_ll, ssid_len, ssid, key_len, key, auth_type, bssid, channel);
 
-    if (ret == 0) {
-        // Wait for responses: EV_AUTH, EV_LINK, EV_SET_SSID, EV_PSK_SUP
-        // Will get EV_DEAUTH_IND if password is invalid
-        self->wifi_join_state = WIFI_JOIN_STATE_ACTIVE;
-
-        if (auth_type == CYW43_AUTH_OPEN) {
-            // For open security we don't need EV_PSK_SUP, so set that flag indicator now
-            self->wifi_join_state |= WIFI_JOIN_STATE_KEYED;
-        }
+    if (ret != 0) {
+        self->wifi_join_state = WIFI_JOIN_STATE_FAIL;
     }
 
     CYW43_THREAD_EXIT;

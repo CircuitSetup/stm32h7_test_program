@@ -85,7 +85,7 @@ static int test_uart_read_line_internal(char *buffer,
         }
 
         if ((ch == '\r') || (ch == '\n')) {
-            if ((idx == 0U) && (masked == 0U)) {
+            if (idx == 0U) {
                 continue;
             }
             buffer[idx] = '\0';

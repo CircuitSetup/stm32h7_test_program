@@ -83,10 +83,7 @@ extern bool enable_spi_packet_dumping;
 #define CYW43_SDPCM_WRITE_BYTES_PAD(len) ALIGN_UINT((len), 4)
 #else
 #define CYW43_WRITE_BYTES_PAD(len) ALIGN_UINT((len), 64)
-#define CYW43_SDPCM_WRITE_BYTES_PAD(len) \
-    (((len) > AP6256_CYW43_SDIO_F2_BLOCK_SIZE) \
-         ? ALIGN_UINT((len), AP6256_CYW43_SDIO_F2_BLOCK_SIZE) \
-         : ALIGN_UINT((len), AP6256_CYW43_SDPCM_HEAD_ALIGN))
+#define CYW43_SDPCM_WRITE_BYTES_PAD(len) ALIGN_UINT((len), AP6256_CYW43_SDIO_F2_BLOCK_SIZE)
 #endif
 
 // Configure the active level of the host interrupt pin.
@@ -362,6 +359,17 @@ static void cyw43_xxd(size_t len, const uint8_t *buf) {
 #define CYW43_WPA_AUTH_PSK (0x0004)
 #define CYW43_WPA2_AUTH_PSK (0x0080)
 #define CYW43_WPA3_AUTH_SAE_PSK (0x40000)
+
+static const uint8_t ap6256_wpa2_psk_ccmp_rsn_ie[] = {
+    0x30, 0x14,                         // RSN element, 20-byte body
+    0x01, 0x00,                         // version 1
+    0x00, 0x0f, 0xac, 0x04,             // group cipher: CCMP
+    0x01, 0x00,                         // one pairwise cipher
+    0x00, 0x0f, 0xac, 0x04,             // pairwise cipher: CCMP
+    0x01, 0x00,                         // one AKM
+    0x00, 0x0f, 0xac, 0x02,             // AKM: PSK
+    0x00, 0x00,                         // RSN capabilities
+};
 
 // Max password length
 #define CYW43_WPA_MAX_PASSWORD_LEN 64
@@ -2574,21 +2582,21 @@ static void cyw43_clm_load(cyw43_int_t *self, const uint8_t *clm_ptr, size_t clm
     CYW43_VDEBUG("clm data load ok\n");
 }
 
-static void cyw43_write_iovar_u32(cyw43_int_t *self, const char *var, uint32_t val, uint32_t iface) {
+static int cyw43_write_iovar_u32(cyw43_int_t *self, const char *var, uint32_t val, uint32_t iface) {
     uint8_t *buf = &self->spid_buf[SDPCM_HEADER_LEN + 16];
     size_t len = strlen(var) + 1;
     memcpy(buf, var, len);
     cyw43_put_le32(buf + len, val);
-    cyw43_do_ioctl(self, SDPCM_SET, WLC_SET_VAR, len + 4, buf, iface);
+    return cyw43_do_ioctl(self, SDPCM_SET, WLC_SET_VAR, len + 4, buf, iface);
 }
 
-static void cyw43_write_iovar_u32_u32(cyw43_int_t *self, const char *var, uint32_t val0, uint32_t val1, uint32_t iface) {
+static int cyw43_write_iovar_u32_u32(cyw43_int_t *self, const char *var, uint32_t val0, uint32_t val1, uint32_t iface) {
     uint8_t *buf = &self->spid_buf[SDPCM_HEADER_LEN + 16];
     size_t len = strlen(var) + 1;
     memcpy(buf, var, len);
     cyw43_put_le32(buf + len, val0);
     cyw43_put_le32(buf + len + 4, val1);
-    cyw43_do_ioctl(self, SDPCM_SET, WLC_SET_VAR, len + 8, buf, iface);
+    return cyw43_do_ioctl(self, SDPCM_SET, WLC_SET_VAR, len + 8, buf, iface);
 }
 
 // buf may point anywhere in self->spid_buf (or elsewhere)
@@ -3508,10 +3516,51 @@ f2_ready:
 /*******************************************************************************/
 // WiFi stuff
 
-static void cyw43_set_ioctl_u32(cyw43_int_t *self, uint32_t cmd, uint32_t val, uint32_t iface) {
+static int cyw43_set_ioctl_u32(cyw43_int_t *self, uint32_t cmd, uint32_t val, uint32_t iface) {
     uint8_t *buf = &self->spid_buf[SDPCM_HEADER_LEN + 16];
     cyw43_put_le32(buf, val);
-    cyw43_do_ioctl(self, SDPCM_SET, cmd, 4, buf, iface);
+    return cyw43_do_ioctl(self, SDPCM_SET, cmd, 4, buf, iface);
+}
+
+static void cyw43_ap6256_event_mask_set(uint8_t *mask, uint32_t event_type) {
+    mask[event_type >> 3] |= (uint8_t)(1U << (event_type & 7U));
+}
+
+static void cyw43_ap6256_build_sta_event_mask(uint8_t *mask, size_t mask_len) {
+    memset(mask, 0, mask_len);
+    cyw43_ap6256_event_mask_set(mask, CYW43_EV_SET_SSID);
+    cyw43_ap6256_event_mask_set(mask, CYW43_EV_JOIN);
+    cyw43_ap6256_event_mask_set(mask, CYW43_EV_AUTH);
+    cyw43_ap6256_event_mask_set(mask, CYW43_EV_DEAUTH);
+    cyw43_ap6256_event_mask_set(mask, CYW43_EV_DEAUTH_IND);
+    cyw43_ap6256_event_mask_set(mask, CYW43_EV_ASSOC);
+    cyw43_ap6256_event_mask_set(mask, CYW43_EV_DISASSOC);
+    cyw43_ap6256_event_mask_set(mask, CYW43_EV_DISASSOC_IND);
+    cyw43_ap6256_event_mask_set(mask, CYW43_EV_LINK);
+    cyw43_ap6256_event_mask_set(mask, CYW43_EV_PRUNE);
+    cyw43_ap6256_event_mask_set(mask, CYW43_EV_PSK_SUP);
+    cyw43_ap6256_event_mask_set(mask, CYW43_EV_ICV_ERROR);
+    cyw43_ap6256_event_mask_set(mask, CYW43_EV_ESCAN_RESULT);
+    cyw43_ap6256_event_mask_set(mask, CYW43_EV_CSA_COMPLETE_IND);
+    cyw43_ap6256_event_mask_set(mask, CYW43_EV_ASSOC_REQ_IE);
+    cyw43_ap6256_event_mask_set(mask, CYW43_EV_ASSOC_RESP_IE);
+}
+
+static int cyw43_ap6256_program_sta_event_mask(cyw43_int_t *self) {
+    uint8_t event_mask[4 + 32];
+    int ret_global;
+    int ret_bsscfg;
+
+    cyw43_ap6256_build_sta_event_mask(event_mask + 4, 32);
+    ret_global = cyw43_write_iovar_n(self, "event_msgs", 32, event_mask + 4, WWD_STA_INTERFACE);
+
+    memset(event_mask, 0, 4);
+    ret_bsscfg = cyw43_write_iovar_n(self, "bsscfg:event_msgs", sizeof(event_mask), event_mask, WWD_STA_INTERFACE);
+
+    if ((ret_global != 0) && (ret_bsscfg != 0)) {
+        return ret_bsscfg;
+    }
+    return 0;
 }
 
 static uint32_t cyw43_get_ioctl_u32(cyw43_int_t *self, uint32_t cmd, uint32_t iface) {
@@ -3858,6 +3907,26 @@ static void ap6256_cyw43_drain_pending_packets(cyw43_int_t *self) {
                                         (int32_t)packets);
 }
 
+static void ap6256_cyw43_escan_abort(cyw43_int_t *self) {
+    cyw43_wifi_scan_options_t opts;
+
+    memset(&opts, 0, sizeof(opts));
+    opts.version = 1; // ESCAN_REQ_VERSION
+    opts.action = 3; // WL_SCAN_ACTION_ABORT
+    memset(opts.bssid, 0xff, sizeof(opts.bssid));
+    opts.bss_type = 2; // WICED_BSS_TYPE_ANY
+
+    /*
+     * brcmfmac aborts outstanding scan work before starting association.
+     * BCM43456 can otherwise keep returning stale ESCAN_RESULT completions
+     * after the visible scan has completed, leaving join with no auth/assoc
+     * progress. Abort is best-effort: older firmware may report "no scan" and
+     * that should not block association.
+     */
+    (void)cyw43_write_iovar_n(self, "escan", sizeof(opts), &opts, WWD_STA_INTERFACE);
+    ap6256_cyw43_drain_pending_packets(self);
+}
+
 int cyw43_ll_wifi_scan(cyw43_ll_t *self_in, cyw43_wifi_scan_options_t *opts) {
     cyw43_int_t *self = CYW_INT_FROM_LL(self_in);
     static uint16_t s_scan_sync_id;
@@ -3903,14 +3972,28 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
     cyw43_int_t *self = CYW_INT_FROM_LL(self_in);
 
     uint8_t buf[2 + CYW43_WPA_SAE_MAX_PASSWORD_LEN];
+    int ret;
 
-    cyw43_write_iovar_u32(self, "ampdu_ba_wsize", 8, WWD_STA_INTERFACE);
+    ret = ap6256_cyw43_scan_wake(self, self_in);
+    if (ret != 0) {
+        return ret;
+    }
+    ap6256_cyw43_escan_abort(self);
 
+    /*
+     * This is a throughput tuning knob, not an association prerequisite. On
+     * AP6256 after escan, the first post-scan control frame can occasionally be
+     * rejected by the SDIO data path; do not fail manufacturing join on an AMPDU
+     * window hint.
+     */
+    (void)cyw43_write_iovar_u32(self, "ampdu_ba_wsize", 8, WWD_STA_INTERFACE);
     uint32_t wpa_auth = 0;
     if (auth_type == CYW43_AUTH_OPEN) {
         wpa_auth = 0;
-    } else if (auth_type == CYW43_AUTH_WPA2_AES_PSK || auth_type == CYW43_AUTH_WPA2_MIXED_PSK) {
+    } else if (auth_type == CYW43_AUTH_WPA2_AES_PSK) {
         wpa_auth = CYW43_WPA2_AUTH_PSK;
+    } else if (auth_type == CYW43_AUTH_WPA2_MIXED_PSK) {
+        wpa_auth = CYW43_WPA_AUTH_PSK | CYW43_WPA2_AUTH_PSK;
     } else if (auth_type == CYW43_AUTH_WPA_TKIP_PSK) {
         wpa_auth = CYW43_WPA_AUTH_PSK;
     } else if (auth_type == CYW43_AUTH_WPA3_SAE_AES_PSK || auth_type == CYW43_AUTH_WPA3_WPA2_AES_PSK) {
@@ -3918,6 +4001,26 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
     } else {
         // Unsupported auth_type (security) value.
         return -CYW43_EINVAL;
+    }
+
+    if (auth_type == CYW43_AUTH_WPA2_AES_PSK || auth_type == CYW43_AUTH_WPA2_MIXED_PSK) {
+        /*
+         * brcmfmac programs the RSN/WPA IE before issuing the join. BCM43456
+         * accepts the scalar wsec/wpa_auth settings without error, but on AP6256
+         * it can then stay silent during association. Provide the WPA2-PSK/CCMP
+         * RSN IE explicitly so firmware has the same association context.
+         */
+        ret = cyw43_write_iovar_n(self, "wpaie", sizeof(ap6256_wpa2_psk_ccmp_rsn_ie), ap6256_wpa2_psk_ccmp_rsn_ie, WWD_STA_INTERFACE);
+        if (ret != 0) {
+            /*
+             * brcmfmac supplies the RSN IE when userspace has one, but the
+             * scalar wsec/wpa_auth/PMK path is still a valid FullMAC join
+             * sequence. On AP6256 the first post-scan control frame can be
+             * rejected by the SDIO path; do not abort association before the
+             * actual primary-BSS security state and PMK are programmed.
+             */
+            ret = 0;
+        }
     }
 
     // Check key length
@@ -3928,29 +4031,70 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
     }
 
     CYW43_VDEBUG("Setting wsec=0x%x\n", auth_type & 0xff);
-    cyw43_set_ioctl_u32(self, WLC_SET_WSEC, auth_type & 0xff, WWD_STA_INTERFACE);
+    ret = cyw43_write_iovar_u32(self, "wsec", auth_type & 0xff, WWD_STA_INTERFACE);
+    if (ret != 0) {
+        return ret;
+    }
 
     // supplicant variable
     CYW43_VDEBUG("Setting sup_wpa=%d\n", auth_type == 0 ? 0 : 1);
-    cyw43_write_iovar_u32_u32(self, "bsscfg:sup_wpa", 0, auth_type == 0 ? 0 : 1, WWD_STA_INTERFACE);
+    ret = cyw43_write_iovar_u32(self, "sup_wpa", auth_type == 0 ? 0 : 1, WWD_STA_INTERFACE);
+    if (ret != 0) {
+        return ret;
+    }
 
     // set the EAPOL version to whatever the AP is using (-1)
     CYW43_VDEBUG("Setting sup_wpa2_eapver\n");
-    cyw43_write_iovar_u32_u32(self, "bsscfg:sup_wpa2_eapver", 0, -1, WWD_STA_INTERFACE);
+    ret = cyw43_write_iovar_u32(self, "sup_wpa2_eapver", (uint32_t)-1, WWD_STA_INTERFACE);
+    if (ret != 0) {
+        return ret;
+    }
 
     // wwd_wifi_set_supplicant_eapol_key_timeout
     CYW43_VDEBUG("Setting sup_wpa_tmo %d\n", CYW_EAPOL_KEY_TIMEOUT);
-    cyw43_write_iovar_u32_u32(self, "bsscfg:sup_wpa_tmo", 0, CYW_EAPOL_KEY_TIMEOUT, WWD_STA_INTERFACE);
+    ret = cyw43_write_iovar_u32(self, "sup_wpa_tmo", CYW_EAPOL_KEY_TIMEOUT, WWD_STA_INTERFACE);
+    if (ret != 0) {
+        return ret;
+    }
 
     if (auth_type != CYW43_AUTH_OPEN && auth_type != CYW43_AUTH_WPA3_SAE_AES_PSK) {
         // wwd_wifi_set_passphrase
+        memset(buf, 0, sizeof(buf));
         cyw43_put_le16(buf, key_len);
         cyw43_put_le16(buf + 2, 1);
         memcpy(buf + 4, key, key_len);
         cyw43_delay_ms(2); // Delay required to allow radio firmware to be ready to receive PMK and avoid intermittent failure
 
         CYW43_VDEBUG("Setting wsec_pmk %d\n", key_len);
-        cyw43_do_ioctl(self, SDPCM_SET, WLC_SET_WSEC_PMK, 4 + CYW43_WPA_MAX_PASSWORD_LEN, buf, WWD_STA_INTERFACE); // 68, see wsec_pmk_t
+        ret = cyw43_do_ioctl(self, SDPCM_SET, WLC_SET_WSEC_PMK, 4 + CYW43_WPA_MAX_PASSWORD_LEN, buf, WWD_STA_INTERFACE); // 68, see wsec_pmk_t
+        if (ret != 0) {
+            return ret;
+        }
+    }
+
+    // set infrastructure mode
+    CYW43_VDEBUG("Setting infra\n");
+    ret = cyw43_set_ioctl_u32(self, WLC_SET_INFRA, 1, WWD_STA_INTERFACE);
+    if (ret != 0) {
+        return ret;
+    }
+
+    // set auth type
+    CYW43_VDEBUG("Setting auth\n");
+    ret = cyw43_write_iovar_u32(self, "auth", (wpa_auth == CYW43_WPA3_AUTH_SAE_PSK) ? AUTH_TYPE_SAE : AUTH_TYPE_OPEN, WWD_STA_INTERFACE);
+    if (ret != 0) {
+        return ret;
+    }
+    ret = cyw43_write_iovar_u32(self, "mfp", (wpa_auth == CYW43_WPA3_AUTH_SAE_PSK) ? MFP_CAPABLE : MFP_NONE, WWD_STA_INTERFACE);
+    if (ret != 0) {
+        return ret;
+    }
+
+    // set WPA auth mode
+    CYW43_VDEBUG("Setting wpa auth 0x%x\n", wpa_auth);
+    ret = cyw43_write_iovar_u32(self, "wpa_auth", wpa_auth, WWD_STA_INTERFACE);
+    if (ret != 0) {
+        return ret;
     }
 
     if (wpa_auth == CYW43_WPA3_AUTH_SAE_PSK) {
@@ -3958,35 +4102,21 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
         cyw43_put_le16(buf, key_len);
         memcpy(buf + 2, key, key_len);
         cyw43_delay_ms(2); // Delay required to allow radio firmware to be ready to receive PMK and avoid intermittent failure
-        cyw43_write_iovar_n(self, "sae_password", 2 + CYW43_WPA_SAE_MAX_PASSWORD_LEN, buf, WWD_STA_INTERFACE);
+        ret = cyw43_write_iovar_n(self, "sae_password", 2 + CYW43_WPA_SAE_MAX_PASSWORD_LEN, buf, WWD_STA_INTERFACE);
+        if (ret != 0) {
+            return ret;
+        }
     }
 
-    // set infrastructure mode
-    CYW43_VDEBUG("Setting infra\n");
-    cyw43_set_ioctl_u32(self, WLC_SET_INFRA, 1, WWD_STA_INTERFACE);
-
-    // set auth type
-    CYW43_VDEBUG("Setting auth\n");
-    cyw43_set_ioctl_u32(self, WLC_SET_AUTH, (wpa_auth == CYW43_WPA3_AUTH_SAE_PSK) ? AUTH_TYPE_SAE : AUTH_TYPE_OPEN, WWD_STA_INTERFACE);
-    cyw43_write_iovar_u32(self, "mfp", (wpa_auth == CYW43_WPA2_AUTH_PSK || wpa_auth == CYW43_WPA3_AUTH_SAE_PSK) ? MFP_CAPABLE : MFP_NONE, WWD_STA_INTERFACE);
-
-    // set WPA auth mode
-    CYW43_VDEBUG("Setting wpa auth 0x%x\n", wpa_auth);
-    cyw43_set_ioctl_u32(self, WLC_SET_WPA_AUTH, wpa_auth, WWD_STA_INTERFACE);
-
-    // allow relevant events through:
-    //  EV_SET_SSID=0
-    //  EV_AUTH=3
-    //  EV_DEAUTH_IND=6
-    //  EV_DISASSOC_IND=12
-    //  EV_LINK=16
-    //  EV_PSK_SUP=46
-    //  EV_ESCAN_RESULT=69
-    //  EV_CSA_COMPLETE_IND=80
     /*
-    memcpy(buf, "\x00\x00\x00\x00" "\x49\x10\x01\x00\x00\x40\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00", 4 + 18);
-    cyw43_write_iovar_n(self, "bsscfg:event_msgs", 4 + 18, buf, WWD_STA_INTERFACE);
-    */
+     * Allow all STA association/auth/link events through. The old 18-byte
+     * literal omitted JOIN/ASSOC and truncated higher events, which left AP6256
+     * stuck at CYW43_LINK_JOIN after WLC_SET_SSID even though scan events worked.
+     */
+    ret = cyw43_ap6256_program_sta_event_mask(self);
+    if (ret != 0) {
+        return ret;
+    }
 
     cyw43_put_le32(self->last_ssid_joined, ssid_len);
     memcpy(self->last_ssid_joined + 4, ssid, ssid_len);
@@ -4017,14 +4147,14 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
 
         // join the AP
         CYW43_VDEBUG("Join AP\n");
-        cyw43_write_iovar_n(self, "join", 4 + 32 + 20 + 14, buf, WWD_STA_INTERFACE);
+        ret = cyw43_write_iovar_n(self, "join", 4 + 32 + 20 + 14, buf, WWD_STA_INTERFACE);
     } else {
         // join SSID
         CYW43_VDEBUG("Set ssid\n");
-        cyw43_do_ioctl(self, SDPCM_SET, WLC_SET_SSID, 36, self->last_ssid_joined, WWD_STA_INTERFACE);
+        ret = cyw43_do_ioctl(self, SDPCM_SET, WLC_SET_SSID, 36, self->last_ssid_joined, WWD_STA_INTERFACE);
     }
 
-    return 0;
+    return ret;
 }
 
 void cyw43_ll_wifi_set_wpa_auth(cyw43_ll_t *self_in) {
