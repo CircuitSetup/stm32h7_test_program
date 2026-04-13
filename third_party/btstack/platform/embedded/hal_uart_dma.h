@@ -56,10 +56,29 @@
 extern "C" {
 #endif
 
+typedef struct {
+    uint32_t tx_blocks;
+    uint32_t tx_bytes;
+    uint32_t rx_irq_bytes;
+    uint32_t rx_blocks_complete;
+    uint32_t rx_errors;
+    uint32_t rx_overruns;
+    uint16_t pending_len;
+    uint16_t pending_offset;
+    uint16_t ring_count;
+    uint8_t irq_active;
+    uint8_t rx_active;
+} hal_uart_dma_diag_t;
+
 /**
  * @brief Init and open device
  */
 void hal_uart_dma_init(void);
+
+/**
+ * @brief Stop the local UART receive backend
+ */
+void hal_uart_dma_deinit(void);
 
 /**
  * @brief Set callback for block received - can be called from ISR context
@@ -101,6 +120,17 @@ void hal_uart_dma_send_block(const uint8_t *buffer, uint16_t length);
  * @param lengh
  */
 void hal_uart_dma_receive_block(uint8_t *buffer, uint16_t len);
+
+/**
+ * @brief Poll a pending receive block for non-DMA embedded ports.
+ * @returns non-zero if a receive block completed
+ */
+uint8_t hal_uart_dma_poll(void);
+
+/**
+ * @brief Return AP6256 UART transport diagnostics for BTstack bring-up.
+ */
+void hal_uart_dma_get_diag(hal_uart_dma_diag_t *diag);
 
 /**
  * @brief Set or clear callback for CSR pulse - can be called from ISR context

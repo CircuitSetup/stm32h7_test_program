@@ -10,8 +10,8 @@
 
 #define HCI_ACL_PAYLOAD_SIZE            (512 + 4)
 #define MAX_NR_GATT_CLIENTS             1
-#define MAX_NR_HCI_CONNECTIONS          1
-#define MAX_NR_HCI_EVENT_CALLBACKS      2
+#define MAX_NR_HCI_CONNECTIONS          4
+#define MAX_NR_HCI_EVENT_CALLBACKS      4
 #define MAX_NR_L2CAP_CHANNELS           3
 #define MAX_NR_L2CAP_SERVICES           1
 #define MAX_NR_BTSTACK_TIMERS           4

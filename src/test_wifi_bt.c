@@ -179,8 +179,17 @@ void test_bt_ble_link(board_test_result_t *result)
     memset(&summary, 0, sizeof(summary));
     memset(&diag, 0, sizeof(diag));
     memset(detail, 0, sizeof(detail));
+
+    test_uart_printf("[ INFO ] bt.ble_link stage: transport preflight\r\n");
     st = ap6256_connectivity_probe_bt_transport(&diag);
     format_bt_transport_summary(measured, sizeof(measured), st, &diag);
+    test_uart_printf("[ INFO ] bt.ble_link stage: transport preflight result st=%s reset=%u/s%02X ver=%u/s%02X frames=%lu\r\n",
+                     ap6256_status_to_string(st),
+                     (unsigned)diag.reset_event_seen,
+                     (unsigned)diag.reset_status,
+                     (unsigned)diag.version_event_seen,
+                     (unsigned)diag.version_status,
+                     (unsigned long)diag.event_frames_seen);
 
     if ((st != AP6256_STATUS_OK) ||
         (diag.reset_event_seen == 0U) ||
@@ -198,6 +207,7 @@ void test_bt_ble_link(board_test_result_t *result)
         return;
     }
 
+    test_uart_printf("[ INFO ] bt.ble_link stage: runtime interactive start\r\n");
     st = ap6256_bt_runtime_run_interactive(&summary, detail, sizeof(detail));
     (void)snprintf(measured,
                    sizeof(measured),

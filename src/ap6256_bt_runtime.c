@@ -3,7 +3,6 @@
 #include "ap6256_assets.h"
 #include "ap6256_connectivity.h"
 #include "btstack_run_loop_embedded.h"
-#include "btstack_chipset_bcm.h"
 #include "btstack_defines.h"
 #include "btstack_event.h"
 #include "btstack_memory.h"
@@ -11,6 +10,7 @@
 #include "btstack_uart_block.h"
 #include "btstack_util.h"
 #include "gap.h"
+#include "hal_uart_dma.h"
 #include "hci.h"
 #include "hci_transport.h"
 #include "hci_transport_h4.h"
@@ -29,6 +29,8 @@
 
 typedef struct {
     uint8_t address_type;
+    uint8_t advertising_event_type;
+    uint8_t connectable;
     bd_addr_t address;
     int8_t rssi;
     char address_text[24];
@@ -46,6 +48,7 @@ typedef struct {
     volatile uint8_t stack_ready;
     volatile uint8_t patchram_loaded;
     volatile uint8_t connected;
+    volatile uint8_t command_polling;
     volatile uint8_t connection_complete;
     volatile uint8_t disconnect_complete;
     volatile uint8_t discovery_complete;
@@ -174,6 +177,8 @@ static void bt_set_connection_state(const char *state)
 
 static void bt_update_runtime_state(void)
 {
+    hal_uart_dma_diag_t uart_diag;
+
     ap6256_connectivity_set_bt_runtime(s_bt_runtime.stack_ready,
                                        (network_manager_get_owner() == NETWORK_OWNER_BLUETOOTH) ? 1U : 0U,
                                        s_bt_runtime.patchram_loaded,
@@ -181,6 +186,49 @@ static void bt_update_runtime_state(void)
                                        s_bt_runtime.service_count,
                                        s_bt_runtime.connected,
                                        s_bt_runtime.connection_state);
+    hal_uart_dma_get_diag(&uart_diag);
+    ap6256_connectivity_set_bt_uart_diag(uart_diag.tx_blocks,
+                                         uart_diag.tx_bytes,
+                                         uart_diag.rx_irq_bytes,
+                                         uart_diag.rx_blocks_complete,
+                                         uart_diag.rx_errors,
+                                         uart_diag.rx_overruns,
+                                         uart_diag.pending_len,
+                                         uart_diag.pending_offset,
+                                         uart_diag.ring_count,
+                                         uart_diag.irq_active,
+                                         uart_diag.rx_active);
+}
+
+static void bt_print_uart_diag(const char *stage)
+{
+    hal_uart_dma_diag_t diag;
+
+    hal_uart_dma_get_diag(&diag);
+    ap6256_connectivity_set_bt_uart_diag(diag.tx_blocks,
+                                         diag.tx_bytes,
+                                         diag.rx_irq_bytes,
+                                         diag.rx_blocks_complete,
+                                         diag.rx_errors,
+                                         diag.rx_overruns,
+                                         diag.pending_len,
+                                         diag.pending_offset,
+                                         diag.ring_count,
+                                         diag.irq_active,
+                                         diag.rx_active);
+    test_uart_printf("[ INFO ] bt.ble_link uart %s: tx=%lu/%lu rx_irq=%lu rx_blk=%lu err=%lu ov=%lu pend=%u/%u ring=%u irq=%u active=%u\r\n",
+                     (stage != NULL) ? stage : "diag",
+                     (unsigned long)diag.tx_blocks,
+                     (unsigned long)diag.tx_bytes,
+                     (unsigned long)diag.rx_irq_bytes,
+                     (unsigned long)diag.rx_blocks_complete,
+                     (unsigned long)diag.rx_errors,
+                     (unsigned long)diag.rx_overruns,
+                     (unsigned)diag.pending_offset,
+                     (unsigned)diag.pending_len,
+                     (unsigned)diag.ring_count,
+                     (unsigned)diag.irq_active,
+                     (unsigned)diag.rx_active);
 }
 
 static int bt_find_device(const ap6256_bt_device_t *devices,
@@ -200,7 +248,13 @@ static int bt_find_device(const ap6256_bt_device_t *devices,
     return -1;
 }
 
+static uint8_t bt_advertising_event_is_connectable(uint8_t event_type)
+{
+    return ((event_type == 0x00U) || (event_type == 0x01U)) ? 1U : 0U;
+}
+
 static void bt_record_device(uint8_t address_type,
+                             uint8_t advertising_event_type,
                              const bd_addr_t address,
                              int8_t rssi,
                              const char *name)
@@ -220,6 +274,8 @@ static void bt_record_device(uint8_t address_type,
 
     device = &s_bt_runtime.devices[(uint32_t)slot];
     device->address_type = address_type;
+    device->advertising_event_type = advertising_event_type;
+    device->connectable = (uint8_t)(device->connectable | bt_advertising_event_is_connectable(advertising_event_type));
     memcpy(device->address, address, sizeof(bd_addr_t));
     device->rssi = rssi;
     bt_copy_text(device->address_text,
@@ -272,17 +328,52 @@ static int bt_prompt_index(const char *prompt, uint8_t count, uint32_t timeout_m
     return (int)(value - 1UL);
 }
 
+static int bt_prompt_device(const char *prompt, uint8_t count, uint32_t timeout_ms)
+{
+    char line[64];
+    char *endptr = NULL;
+    unsigned long value;
+    int line_len;
+    uint8_t i;
+
+    if (count == 0U) {
+        return -1;
+    }
+
+    test_uart_write_str(prompt);
+    line_len = test_uart_read_line(line, sizeof(line), timeout_ms);
+    if (line_len <= 0) {
+        return -1;
+    }
+
+    value = strtoul(line, &endptr, 10);
+    if ((endptr != line) && (*endptr == '\0') && (value > 0UL) && (value <= count)) {
+        return (int)(value - 1UL);
+    }
+
+    for (i = 0U; i < count; ++i) {
+        if ((strcmp(s_bt_runtime.devices[i].address_text, line) == 0) ||
+            (strcmp(s_bt_runtime.devices[i].name, line) == 0)) {
+            return (int)i;
+        }
+    }
+
+    return -1;
+}
+
 static void bt_print_devices(void)
 {
     uint8_t i;
 
     test_uart_write_str("\r\nNearby BLE devices:\r\n");
     for (i = 0U; i < s_bt_runtime.device_count; ++i) {
-        test_uart_printf("  %u. %s RSSI=%d type=%u name='%s'\r\n",
+        test_uart_printf("  %u. %s RSSI=%d addr_type=%u adv=%u conn=%u name='%s'\r\n",
                          (unsigned int)(i + 1U),
                          s_bt_runtime.devices[i].address_text,
                          (int)s_bt_runtime.devices[i].rssi,
                          s_bt_runtime.devices[i].address_type,
+                         s_bt_runtime.devices[i].advertising_event_type,
+                         s_bt_runtime.devices[i].connectable,
                          s_bt_runtime.devices[i].name);
     }
 }
@@ -335,6 +426,7 @@ static void bt_runtime_hci_event_handler(uint8_t packet_type,
                       name,
                       sizeof(name));
         bt_record_device(gap_event_advertising_report_get_address_type(packet),
+                         gap_event_advertising_report_get_advertising_event_type(packet),
                          address,
                          gap_event_advertising_report_get_rssi(packet),
                          name);
@@ -402,9 +494,24 @@ static void bt_runtime_gatt_event_handler(uint8_t packet_type,
     }
 }
 
+static void bt_control_init(const void *transport_config)
+{
+    UNUSED(transport_config);
+}
+
 static int bt_control_on(void)
 {
-    return (ap6256_bt_open(0U) == AP6256_STATUS_OK) ? 0 : -1;
+    ap6256_status_t st;
+
+    st = ap6256_bt_open(0U);
+    if (st != AP6256_STATUS_OK) {
+        return -1;
+    }
+
+    s_bt_runtime.patchram_loaded = 0U;
+    test_uart_printf("[ INFO ] bt.ble_link stage: ROM HCI runtime (PatchRAM bypassed)\r\n");
+    test_uart_flush_uart_rx();
+    return 0;
 }
 
 static int bt_control_off(void)
@@ -429,7 +536,7 @@ static void bt_control_register_notifications(void (*cb)(POWER_NOTIFICATION_t ev
 }
 
 static const btstack_control_t s_bt_control = {
-    NULL,
+    &bt_control_init,
     &bt_control_on,
     &bt_control_off,
     &bt_control_sleep,
@@ -460,10 +567,13 @@ static bool bt_runtime_wait_until(volatile uint8_t *flag, uint32_t timeout_ms)
     uint32_t start_ms = HAL_GetTick();
 
     while ((HAL_GetTick() - start_ms) < timeout_ms) {
+        (void)hal_uart_dma_poll();
+        btstack_run_loop_embedded_execute_once();
+        (void)hal_uart_dma_poll();
+        bt_update_runtime_state();
         if (*flag != 0U) {
             return true;
         }
-        osDelay(10U);
     }
 
     return false;
@@ -485,20 +595,31 @@ static bool bt_runtime_start_stack(char *detail, size_t detail_len)
     s_bt_runtime.active = 1U;
     bt_set_connection_state("starting");
     bt_update_runtime_state();
+    test_uart_printf("[ INFO ] bt.ble_link stage: btstack init\r\n");
 
+    test_uart_printf("[ INFO ] bt.ble_link stage: btstack_memory_init enter\r\n");
     btstack_memory_init();
+    test_uart_printf("[ INFO ] bt.ble_link stage: btstack_memory_init exit\r\n");
+    test_uart_printf("[ INFO ] bt.ble_link stage: btstack_run_loop_init enter\r\n");
     btstack_run_loop_init(btstack_run_loop_embedded_get_instance());
+    test_uart_printf("[ INFO ] bt.ble_link stage: btstack_run_loop_init exit\r\n");
 
+    test_uart_printf("[ INFO ] bt.ble_link stage: hci_init enter\r\n");
     hci_init(hci_transport_h4_instance(btstack_uart_block_embedded_instance()), (void *)&s_bt_uart_config);
+    test_uart_printf("[ INFO ] bt.ble_link stage: hci_init exit\r\n");
+    test_uart_printf("[ INFO ] bt.ble_link stage: hci config enter\r\n");
     hci_set_control(&s_bt_control);
-    hci_set_chipset(btstack_chipset_bcm_instance());
     l2cap_init();
     gatt_client_init();
+    test_uart_printf("[ INFO ] bt.ble_link stage: hci config exit\r\n");
 
     s_bt_runtime.hci_event_registration.callback = &bt_runtime_hci_event_handler;
+    test_uart_printf("[ INFO ] bt.ble_link stage: hci_add_event_handler enter\r\n");
     hci_add_event_handler(&s_bt_runtime.hci_event_registration);
+    test_uart_printf("[ INFO ] bt.ble_link stage: hci_add_event_handler exit\r\n");
 
     ap6256_connectivity_set_bt_note("Starting BTstack and loading Broadcom PatchRAM.");
+    test_uart_printf("[ INFO ] bt.ble_link stage: hci power on\r\n");
     rc = hci_power_control(HCI_POWER_ON);
     if (rc != 0) {
         bt_set_detail(detail, detail_len, "BTstack power-on failed while opening the AP6256 controller.");
@@ -510,8 +631,28 @@ static bool bt_runtime_start_stack(char *detail, size_t detail_len)
         return false;
     }
 
+    test_uart_printf("[ INFO ] bt.ble_link stage: wait HCI working\r\n");
     if (!bt_runtime_wait_until(&s_bt_runtime.stack_ready, AP6256_BT_CONNECT_TIMEOUT_MS)) {
-        bt_set_detail(detail, detail_len, "Timed out waiting for BTstack to reach HCI_STATE_WORKING.");
+        hal_uart_dma_diag_t uart_diag;
+
+        bt_print_uart_diag("hci_timeout");
+        hal_uart_dma_get_diag(&uart_diag);
+        if ((detail != NULL) && (detail_len > 0U)) {
+            (void)snprintf(detail,
+                           detail_len,
+                           "HCI working timeout tx=%lu/%lu rx=%lu/%lu err=%lu ov=%lu pend=%u/%u ring=%u irq=%u act=%u.",
+                           (unsigned long)uart_diag.tx_blocks,
+                           (unsigned long)uart_diag.tx_bytes,
+                           (unsigned long)uart_diag.rx_irq_bytes,
+                           (unsigned long)uart_diag.rx_blocks_complete,
+                           (unsigned long)uart_diag.rx_errors,
+                           (unsigned long)uart_diag.rx_overruns,
+                           (unsigned)uart_diag.pending_offset,
+                           (unsigned)uart_diag.pending_len,
+                           (unsigned)uart_diag.ring_count,
+                           (unsigned)uart_diag.irq_active,
+                           (unsigned)uart_diag.rx_active);
+        }
         ap6256_connectivity_set_bt_note(detail);
         hci_remove_event_handler(&s_bt_runtime.hci_event_registration);
         hci_close();
@@ -521,6 +662,7 @@ static bool bt_runtime_start_stack(char *detail, size_t detail_len)
         return false;
     }
 
+    test_uart_printf("[ INFO ] bt.ble_link stage: HCI working\r\n");
     return true;
 }
 
@@ -551,16 +693,30 @@ static ap6256_status_t bt_runtime_scan(char *detail, size_t detail_len)
 {
     bt_runtime_reset_session_state();
     s_bt_runtime.stack_ready = 1U;
-    s_bt_runtime.patchram_loaded = 1U;
     bt_set_connection_state("scanning");
     bt_update_runtime_state();
 
+    test_uart_printf("[ INFO ] bt.ble_link stage: BLE scan start\r\n");
     gap_set_scan_parameters(1U, 0x0030U, 0x0030U);
     gap_start_scan();
     ap6256_connectivity_set_bt_note("Scanning for nearby BLE devices.");
-    osDelay(AP6256_BT_SCAN_TIMEOUT_MS);
+    {
+        uint32_t start_ms = HAL_GetTick();
+        while ((HAL_GetTick() - start_ms) < AP6256_BT_SCAN_TIMEOUT_MS) {
+            (void)hal_uart_dma_poll();
+            btstack_run_loop_embedded_execute_once();
+            (void)hal_uart_dma_poll();
+        }
+    }
     gap_stop_scan();
-    osDelay(100U);
+    {
+        uint32_t start_ms = HAL_GetTick();
+        while ((HAL_GetTick() - start_ms) < 100U) {
+            (void)hal_uart_dma_poll();
+            btstack_run_loop_embedded_execute_once();
+            (void)hal_uart_dma_poll();
+        }
+    }
 
     if (s_bt_runtime.device_count == 0U) {
         bt_set_detail(detail, detail_len, "No BLE advertising devices were discovered before scan timeout.");
@@ -570,6 +726,8 @@ static ap6256_status_t bt_runtime_scan(char *detail, size_t detail_len)
         return AP6256_STATUS_TIMEOUT;
     }
 
+    test_uart_printf("[ INFO ] bt.ble_link stage: BLE scan complete devices=%u\r\n",
+                     (unsigned)s_bt_runtime.device_count);
     bt_set_connection_state("scan_complete");
     bt_update_runtime_state();
     return AP6256_STATUS_OK;
@@ -579,6 +737,8 @@ static ap6256_status_t bt_runtime_connect(const ap6256_bt_device_t *device,
                                           char *detail,
                                           size_t detail_len)
 {
+    uint8_t status;
+
     if (device == NULL) {
         bt_set_detail(detail, detail_len, "No BLE device is selected.");
         return AP6256_STATUS_BAD_PARAM;
@@ -588,11 +748,30 @@ static ap6256_status_t bt_runtime_connect(const ap6256_bt_device_t *device,
     s_bt_runtime.connect_status = 0xFFU;
     bt_set_connection_state("connecting");
     bt_update_runtime_state();
+    test_uart_printf("[ INFO ] bt.ble_link stage: BLE connect %s\r\n",
+                     device->address_text);
     ap6256_connectivity_set_bt_selection(device->address_text, device->name, device->rssi, NULL);
     ap6256_connectivity_set_bt_note("Connecting to selected BLE device.");
 
-    if (gap_connect(device->address, (bd_addr_type_t)device->address_type) != ERROR_CODE_SUCCESS) {
-        bt_set_detail(detail, detail_len, "BTstack rejected the BLE connect request.");
+    if (device->connectable == 0U) {
+        bt_set_detail(detail, detail_len, "Selected BLE advertiser is not connectable.");
+        ap6256_connectivity_set_bt_note(detail);
+        bt_set_connection_state("connect_rejected");
+        bt_update_runtime_state();
+        return AP6256_STATUS_BAD_PARAM;
+    }
+
+    status = gap_connect(device->address, (bd_addr_type_t)device->address_type);
+    if (status != ERROR_CODE_SUCCESS) {
+        if ((detail != NULL) && (detail_len > 0U)) {
+            (void)snprintf(detail,
+                           detail_len,
+                           "BTstack rejected BLE connect status=0x%02X addr_type=%u adv=%u conn=%u.",
+                           status,
+                           (unsigned)device->address_type,
+                           (unsigned)device->advertising_event_type,
+                           (unsigned)device->connectable);
+        }
         ap6256_connectivity_set_bt_note(detail);
         bt_set_connection_state("connect_failed");
         bt_update_runtime_state();
@@ -629,6 +808,7 @@ static ap6256_status_t bt_runtime_discover_services(char *detail, size_t detail_
     s_bt_runtime.discovery_status = 0xFFU;
     bt_set_connection_state("discovering_services");
     bt_update_runtime_state();
+    test_uart_printf("[ INFO ] bt.ble_link stage: GATT primary service discovery\r\n");
     ap6256_connectivity_set_bt_note("Discovering primary services on selected BLE device.");
 
     status = gatt_client_discover_primary_services(&bt_runtime_gatt_event_handler,
@@ -650,7 +830,14 @@ static ap6256_status_t bt_runtime_discover_services(char *detail, size_t detail_
     }
 
     if (s_bt_runtime.discovery_status != ATT_ERROR_SUCCESS) {
-        bt_set_detail(detail, detail_len, "BTstack reported a GATT primary-service discovery error.");
+        if ((detail != NULL) && (detail_len > 0U)) {
+            (void)snprintf(detail,
+                           detail_len,
+                           "GATT primary-service discovery failed att=0x%02X handle=0x%04X services=%u.",
+                           s_bt_runtime.discovery_status,
+                           s_bt_runtime.connection_handle,
+                           (unsigned)s_bt_runtime.service_count);
+        }
         ap6256_connectivity_set_bt_note(detail);
         bt_set_connection_state("service_query_failed");
         bt_update_runtime_state();
@@ -665,6 +852,8 @@ static ap6256_status_t bt_runtime_discover_services(char *detail, size_t detail_
         return AP6256_STATUS_PROTOCOL_ERROR;
     }
 
+    test_uart_printf("[ INFO ] bt.ble_link stage: GATT services ready count=%u\r\n",
+                     (unsigned)s_bt_runtime.service_count);
     bt_set_connection_state("services_ready");
     bt_update_runtime_state();
     return AP6256_STATUS_OK;
@@ -707,6 +896,8 @@ static ap6256_status_t bt_runtime_execute(uint8_t reuse_cached,
         bt_set_detail(detail, detail_len, "Timed out waiting for Bluetooth radio ownership.");
         return AP6256_STATUS_TIMEOUT;
     }
+    s_bt_runtime.command_polling = 1U;
+    test_uart_printf("[ INFO ] bt.ble_link stage: acquired bluetooth owner\r\n");
 
     if (!bt_runtime_start_stack(detail, detail_len)) {
         st = AP6256_STATUS_IO_ERROR;
@@ -730,9 +921,9 @@ static ap6256_status_t bt_runtime_execute(uint8_t reuse_cached,
     }
 
     if (selected_device == NULL) {
-        selection = bt_prompt_index("Select BLE device index: ",
-                                    s_bt_runtime.device_count,
-                                    AP6256_WIFI_PROMPT_TIMEOUT_MS);
+        selection = bt_prompt_device("Select BLE device index, address, or exact name: ",
+                                     s_bt_runtime.device_count,
+                                     AP6256_WIFI_PROMPT_TIMEOUT_MS);
         if (selection < 0) {
             bt_set_detail(detail, detail_len, "Invalid or timed-out BLE device selection.");
             st = AP6256_STATUS_TIMEOUT;
@@ -794,10 +985,12 @@ static ap6256_status_t bt_runtime_execute(uint8_t reuse_cached,
 exit:
     bt_runtime_disconnect(2000U);
     bt_runtime_stop_stack();
+    s_bt_runtime.command_polling = 0U;
     if (st != AP6256_STATUS_OK) {
         ap6256_connectivity_set_bt_note(detail);
     }
     network_manager_release(NETWORK_OWNER_BLUETOOTH);
+    bt_update_runtime_state();
     return st;
 }
 
@@ -807,7 +1000,13 @@ void ap6256_bt_runtime_poll(void)
         return;
     }
 
+    if (s_bt_runtime.command_polling != 0U) {
+        return;
+    }
+
+    (void)hal_uart_dma_poll();
     btstack_run_loop_embedded_execute_once();
+    (void)hal_uart_dma_poll();
 }
 
 void ap6256_bt_runtime_suspend(void)

@@ -539,6 +539,32 @@ void ap6256_connectivity_set_bt_runtime(uint8_t stack_ready,
     s_bt_state.last_update_ms = HAL_GetTick();
 }
 
+void ap6256_connectivity_set_bt_uart_diag(uint32_t tx_blocks,
+                                          uint32_t tx_bytes,
+                                          uint32_t rx_irq_bytes,
+                                          uint32_t rx_blocks_complete,
+                                          uint32_t rx_errors,
+                                          uint32_t rx_overruns,
+                                          uint16_t pending_len,
+                                          uint16_t pending_offset,
+                                          uint16_t ring_count,
+                                          uint8_t irq_active,
+                                          uint8_t rx_active)
+{
+    s_bt_state.uart_tx_blocks = tx_blocks;
+    s_bt_state.uart_tx_bytes = tx_bytes;
+    s_bt_state.uart_rx_irq_bytes = rx_irq_bytes;
+    s_bt_state.uart_rx_blocks_complete = rx_blocks_complete;
+    s_bt_state.uart_rx_errors = rx_errors;
+    s_bt_state.uart_rx_overruns = rx_overruns;
+    s_bt_state.uart_pending_len = pending_len;
+    s_bt_state.uart_pending_offset = pending_offset;
+    s_bt_state.uart_ring_count = ring_count;
+    s_bt_state.uart_irq_active = irq_active;
+    s_bt_state.uart_rx_active = rx_active;
+    s_bt_state.last_update_ms = HAL_GetTick();
+}
+
 void ap6256_connectivity_set_bt_selection(const char *address,
                                           const char *name,
                                           int8_t rssi,
@@ -842,6 +868,18 @@ void ap6256_connectivity_print_bt_info(void)
                      state->discovered_services_count,
                      state->connected,
                      (state->connection_state[0] != '\0') ? state->connection_state : "n/a");
+    test_uart_printf("  UART diag: tx=%lu/%lu rx_irq=%lu rx_blk=%lu err=%lu ov=%lu pend=%u/%u ring=%u irq=%u active=%u\r\n",
+                     (unsigned long)state->uart_tx_blocks,
+                     (unsigned long)state->uart_tx_bytes,
+                     (unsigned long)state->uart_rx_irq_bytes,
+                     (unsigned long)state->uart_rx_blocks_complete,
+                     (unsigned long)state->uart_rx_errors,
+                     (unsigned long)state->uart_rx_overruns,
+                     (unsigned)state->uart_pending_offset,
+                     (unsigned)state->uart_pending_len,
+                     (unsigned)state->uart_ring_count,
+                     (unsigned)state->uart_irq_active,
+                     (unsigned)state->uart_rx_active);
     test_uart_printf("  Selected device=%s name='%s' rssi=%d service=%s\r\n",
                      (state->selected_device[0] != '\0') ? state->selected_device : "n/a",
                      (state->selected_name[0] != '\0') ? state->selected_name : "n/a",

@@ -56,3 +56,8 @@ void OTG_FS_IRQHandler(void)
 {
     test_usb_irq_handler();
 }
+
+void USART3_IRQHandler(void)
+{
+    HAL_UART_IRQHandler(&huart3);
+}

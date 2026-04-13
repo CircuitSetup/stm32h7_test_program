@@ -331,6 +331,9 @@ void MX_USART3_UART_Init(void)
     (void)HAL_UARTEx_SetRxFifoThreshold(&huart3, UART_RXFIFO_THRESHOLD_1_8);
     (void)HAL_UARTEx_DisableFifoMode(&huart3);
 #endif
+
+    HAL_NVIC_SetPriority(USART3_IRQn, 5U, 0U);
+    HAL_NVIC_EnableIRQ(USART3_IRQn);
 }
 
 void MX_SPI4_Init(void)

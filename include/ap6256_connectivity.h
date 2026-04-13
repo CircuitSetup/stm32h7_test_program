@@ -132,6 +132,17 @@ typedef struct {
     char selected_name[32];
     char selected_service_uuid[40];
     char connection_state[24];
+    uint32_t uart_tx_blocks;
+    uint32_t uart_tx_bytes;
+    uint32_t uart_rx_irq_bytes;
+    uint32_t uart_rx_blocks_complete;
+    uint32_t uart_rx_errors;
+    uint32_t uart_rx_overruns;
+    uint16_t uart_pending_len;
+    uint16_t uart_pending_offset;
+    uint16_t uart_ring_count;
+    uint8_t uart_irq_active;
+    uint8_t uart_rx_active;
     char last_error[96];
     uint32_t last_update_ms;
 } ap6256_bt_state_t;
@@ -254,6 +265,17 @@ void ap6256_connectivity_set_bt_runtime(uint8_t stack_ready,
                                         uint8_t discovered_services_count,
                                         uint8_t connected,
                                         const char *connection_state);
+void ap6256_connectivity_set_bt_uart_diag(uint32_t tx_blocks,
+                                          uint32_t tx_bytes,
+                                          uint32_t rx_irq_bytes,
+                                          uint32_t rx_blocks_complete,
+                                          uint32_t rx_errors,
+                                          uint32_t rx_overruns,
+                                          uint16_t pending_len,
+                                          uint16_t pending_offset,
+                                          uint16_t ring_count,
+                                          uint8_t irq_active,
+                                          uint8_t rx_active);
 void ap6256_connectivity_set_bt_selection(const char *address,
                                           const char *name,
                                           int8_t rssi,

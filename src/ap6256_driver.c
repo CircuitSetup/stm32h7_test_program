@@ -542,7 +542,7 @@ static ap6256_status_t ap6256_bt_hci_probe_once(uint8_t wl_on, ap6256_bt_diag_t 
     diag->bt_reg_on = 1U;
     HAL_Delay(AP6256_POWER_SETTLE_MS);
 
-    test_uart_flush_rx();
+    test_uart_flush_uart_rx();
 
     st = ap6256_bt_send_hci_cmd(cmd_reset, sizeof(cmd_reset));
     if (st != AP6256_STATUS_OK) {
@@ -1202,7 +1202,7 @@ ap6256_status_t ap6256_bt_open(uint8_t wl_on)
     ap6256_bt_prepare_flow_control();
     ap6256_set_enables((wl_on != 0U) ? 1U : 0U, 1U);
     HAL_Delay(AP6256_POWER_SETTLE_MS);
-    test_uart_flush_rx();
+    test_uart_flush_uart_rx();
     s_ap6256_bt_open = 1U;
     return AP6256_STATUS_OK;
 }

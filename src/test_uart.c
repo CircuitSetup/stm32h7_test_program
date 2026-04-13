@@ -273,6 +273,15 @@ void test_uart_flush_rx(void)
     }
 }
 
+void test_uart_flush_uart_rx(void)
+{
+    uint8_t ch;
+
+    while (HAL_UART_Receive(&huart3, &ch, 1U, 1U) == HAL_OK) {
+        /* flush UART only; RTT may contain queued operator input */
+    }
+}
+
 void test_uart_set_uart_console_enabled(bool enabled)
 {
     s_uart_console_enabled = enabled ? 1U : 0U;

@@ -137,7 +137,7 @@ static int btstack_uart_embedded_close(void){
     btstack_run_loop_remove_data_source(&transport_data_source);
 
     // close device
-    // ...
+    hal_uart_dma_deinit();
     return 0;
 }
 
