@@ -50,6 +50,10 @@
 
 #define CYW43_HOST_NAME                     "karios48-wifi"
 
+#define AP6256_CYW43_SDIO_F1_BLOCK_SIZE     (64U)
+#define AP6256_CYW43_SDIO_F2_BLOCK_SIZE     (64U)
+#define AP6256_CYW43_SDPCM_HEAD_ALIGN       (4U)
+
 unsigned int cyw43_hal_ticks_us(void);
 unsigned int cyw43_hal_ticks_ms(void);
 void cyw43_delay_us(unsigned int us);

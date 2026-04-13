@@ -39,6 +39,13 @@
 
 #if !CYW43_USE_SPI
 
+static uint32_t cyw43_sdio_function_block_size(uint32_t fn) {
+    if (fn == 2) {
+        return AP6256_CYW43_SDIO_F2_BLOCK_SIZE;
+    }
+    return AP6256_CYW43_SDIO_F1_BLOCK_SIZE;
+}
+
 // Performs an SDIO CMD52 transaction.
 // Read success returns the response byte (0-255). Write success returns 0.
 // On error returns a negative errno code.
@@ -56,17 +63,18 @@ static int cyw43_sdio_cmd52(bool write, uint32_t fn, uint32_t addr, uint32_t val
 }
 
 static int cyw43_sdio_cmd53(bool write, uint32_t fn, uint32_t addr, size_t len, uint8_t *buf) {
-    uint32_t block_size;
+    uint32_t block_size = cyw43_sdio_function_block_size(fn);
     uint32_t block_mode;
     size_t sz = len;
-    if (sz <= 64) {
+    if (sz <= 512 && sz < block_size) {
         // SDIO_BYTE_MODE (can go up to 512 bytes)
         // in this case the SDIO chuck of data must be a single block of the length of buf
         block_size = sz;
         block_mode = 0;
     } else {
-        // looks like block_size must be 64
-        block_size = 64;
+        if ((block_size == 0) || ((sz % block_size) != 0)) {
+            return -CYW43_EINVAL;
+        }
         block_mode = 1 << 27;
         sz /= block_size;
     }

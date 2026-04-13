@@ -80,8 +80,13 @@ extern bool enable_spi_packet_dumping;
 // cyw43_read_bytes() also needs padding, but that's handled separately.
 #if CYW43_USE_SPI
 #define CYW43_WRITE_BYTES_PAD(len) ALIGN_UINT((len), 4)
+#define CYW43_SDPCM_WRITE_BYTES_PAD(len) ALIGN_UINT((len), 4)
 #else
 #define CYW43_WRITE_BYTES_PAD(len) ALIGN_UINT((len), 64)
+#define CYW43_SDPCM_WRITE_BYTES_PAD(len) \
+    (((len) > AP6256_CYW43_SDIO_F2_BLOCK_SIZE) \
+         ? ALIGN_UINT((len), AP6256_CYW43_SDIO_F2_BLOCK_SIZE) \
+         : ALIGN_UINT((len), AP6256_CYW43_SDPCM_HEAD_ALIGN))
 #endif
 
 // Configure the active level of the host interrupt pin.
@@ -283,6 +288,7 @@ static void cyw43_xxd(size_t len, const uint8_t *buf) {
 #define SDIOD_CCCR_BRCM_CARDCTRL (0xf1)
 #define SDIOD_SEP_INT_CTL (0xf2)
 #define SDIOD_CCCR_F1BLKSIZE_0 (0x110)
+#define SDIOD_CCCR_F1BLKSIZE_1 (0x111)
 #define SDIOD_CCCR_F2BLKSIZE_0 (0x210)
 #define SDIOD_CCCR_F2BLKSIZE_1 (0x211)
 #define INTR_CTL_MASTER_EN (0x01)
@@ -364,6 +370,12 @@ static void cyw43_xxd(size_t len, const uint8_t *buf) {
 static int cyw43_ll_sdpcm_poll_device(cyw43_int_t *self, size_t *len, uint8_t **buf);
 static int cyw43_write_iovar_n(cyw43_int_t *self, const char *var, size_t len, const void *buf, uint32_t iface);
 static int ap6256_cyw43_scan_wake(cyw43_int_t *self, cyw43_ll_t *self_in);
+
+static bool cyw43_sdpcm_tx_window_open(cyw43_int_t *self) {
+    uint8_t window = (uint8_t)(self->wwd_sdpcm_last_bus_data_credit -
+                               self->wwd_sdpcm_packet_transmit_sequence_number);
+    return (uint8_t)(self->wlan_flow_control == 0U && window != 0U && (window & 0x80U) == 0U);
+}
 
 void cyw43_ll_init(cyw43_ll_t *self_in, void *cb_data) {
     cyw43_int_t *self = CYW_INT_FROM_LL(self_in);
@@ -869,9 +881,12 @@ static int cyw43_sdpcm_send_common(cyw43_int_t *self, uint32_t kind, size_t len,
                                          0U,
                                          0);
 
-    // Wait until we are allowed to send
-    // Credits are 8-bit unsigned integers that roll over, so we are stalled while they are equal
-    if (self->wlan_flow_control || self->wwd_sdpcm_last_bus_data_credit == self->wwd_sdpcm_packet_transmit_sequence_number) {
+    /*
+     * brcmfmac gates queued data frames on the SDPCM tx window, but control
+     * frames use the separate tx_ctrlframe path and are allowed through so
+     * ioctls can make forward progress even when data credits are exhausted.
+     */
+    if (kind == DATA_HEADER && !cyw43_sdpcm_tx_window_open(self)) {
         CYW43_VDEBUG("[CYW43;%u] STALL(%u;%u-%u)\n", (int)cyw43_hal_ticks_ms(), self->wlan_flow_control, self->wwd_sdpcm_packet_transmit_sequence_number, self->wwd_sdpcm_last_bus_data_credit);
 
         uint32_t start_us = cyw43_hal_ticks_us();
@@ -919,7 +934,7 @@ static int cyw43_sdpcm_send_common(cyw43_int_t *self, uint32_t kind, size_t len,
             } else if (ret >= 0) {
                 // printf("cyw43_do_ioctl: got unexpected packet %d\n", ret);
             }
-            if (!self->wlan_flow_control && self->wwd_sdpcm_last_bus_data_credit != self->wwd_sdpcm_packet_transmit_sequence_number) {
+            if (cyw43_sdpcm_tx_window_open(self)) {
                 // CYW43_WARN("STALL(%u;%u-%u): done in %u us\n", self->wlan_flow_control, self->wwd_sdpcm_packet_transmit_sequence_number, self->wwd_sdpcm_last_bus_data_credit, (unsigned int)(cur_us - start_us));
                 break;
             }
@@ -991,10 +1006,11 @@ static int cyw43_sdpcm_send_common(cyw43_int_t *self, uint32_t kind, size_t len,
                                          0);
 
     // padding is taken from junk at end of buffer
+    size_t transfer_len = CYW43_SDPCM_WRITE_BYTES_PAD(size);
     ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_SDPCM_TX,
                                         (int32_t)(((kind & 0xFFU) << 16U) |
-                                                  (CYW43_WRITE_BYTES_PAD(size) & 0xFFFFU)));
-    int tx_ret = cyw43_write_bytes(self, WLAN_FUNCTION, 0, CYW43_WRITE_BYTES_PAD(size), buf);
+                                                  (transfer_len & 0xFFFFU)));
+    int tx_ret = cyw43_write_bytes(self, WLAN_FUNCTION, 0, transfer_len, buf);
     ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_SDPCM_TX, tx_ret);
     return tx_ret;
 }
@@ -1140,10 +1156,11 @@ static int sdpcm_process_rx_packet(cyw43_int_t *self, uint8_t *buf, size_t *out_
 
     if ((header->channel_and_flags & 0x0f) < 3) {
         // a valid header, check the bus data credit
-        uint8_t credit = header->bus_data_credit - self->wwd_sdpcm_last_bus_data_credit;
-        if (credit <= 20) {
-            self->wwd_sdpcm_last_bus_data_credit = header->bus_data_credit;
+        uint8_t tx_max = header->bus_data_credit;
+        if ((uint8_t)(tx_max - self->wwd_sdpcm_packet_transmit_sequence_number) > 0x40U) {
+            tx_max = (uint8_t)(self->wwd_sdpcm_packet_transmit_sequence_number + 2U);
         }
+        self->wwd_sdpcm_last_bus_data_credit = tx_max;
     }
 
     if (header->size == SDPCM_HEADER_LEN) {
@@ -1761,25 +1778,7 @@ static int cyw43_do_ioctl(cyw43_int_t *self, uint32_t kind, uint32_t cmd, size_t
             ap6256_cyw43_port_note_wait_no_packet();
 
             if (allow_scan_resend && (no_packet_loops >= AP6256_CYW43_ESCAN_NO_PACKET_BUDGET_LOOPS)) {
-                /*
-                 * Escan start is asynchronous on BCM43456/AP6256. Do not keep
-                 * blocking for a control response that may never come; hand
-                 * control back to the scan wait path and rely on ESCAN events.
-                 */
-                ap6256_cyw43_port_set_ioctl_phase(AP6256_CYW43_IOCTL_PHASE_ACCEPTED_ASYNC);
-                ap6256_cyw43_port_finish_ioctl(1, last_poll);
-                ap6256_cyw43_port_set_ioctl_attempt_flags(recovery_attempted,
-                                                          forced_probe_attempted,
-                                                          0U);
-                ap6256_cyw43_port_record_ioctl(kind,
-                                               cmd,
-                                               iface,
-                                               (uint32_t)len,
-                                               self->wwd_sdpcm_requested_ioctl_id,
-                                               1,
-                                               last_poll);
-                ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_IOCTL_WAIT, 1);
-                return 0;
+                break;
             }
 
             if ((recovery_attempted == 0U) &&
@@ -1834,24 +1833,6 @@ static int cyw43_do_ioctl(cyw43_int_t *self, uint32_t kind, uint32_t cmd, size_t
             break;
         }
         CYW43_DO_IOCTL_WAIT;
-    }
-
-    if (allow_scan_resend && (last_poll == -1)) {
-        ap6256_cyw43_port_note_wait_resend();
-        ap6256_cyw43_port_set_ioctl_phase(AP6256_CYW43_IOCTL_PHASE_ACCEPTED_ASYNC);
-        ap6256_cyw43_port_finish_ioctl(1, last_poll);
-        ap6256_cyw43_port_set_ioctl_attempt_flags(recovery_attempted,
-                                                  forced_probe_attempted,
-                                                  1U);
-        ap6256_cyw43_port_record_ioctl(kind,
-                                       cmd,
-                                       iface,
-                                       (uint32_t)len,
-                                       self->wwd_sdpcm_requested_ioctl_id,
-                                       1,
-                                       last_poll);
-        ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_IOCTL_WAIT, 1);
-        return 0;
     }
 
     CYW43_WARN("do_ioctl(%u, %u, %u): timeout\n", (unsigned int)kind, (unsigned int)cmd, (unsigned int)len);
@@ -2848,8 +2829,11 @@ backplane_up:
 
     cyw43_write_reg_u8(self, BUS_FUNCTION, SDIOD_CCCR_BLKSIZE_0, SDIO_64B_BLOCK);
     cyw43_write_reg_u8(self, BUS_FUNCTION, SDIOD_CCCR_F1BLKSIZE_0, SDIO_64B_BLOCK);
-    cyw43_write_reg_u8(self, BUS_FUNCTION, SDIOD_CCCR_F2BLKSIZE_0, SDIO_64B_BLOCK);
-    cyw43_write_reg_u8(self, BUS_FUNCTION, SDIOD_CCCR_F2BLKSIZE_1, 0);
+    cyw43_write_reg_u8(self, BUS_FUNCTION, SDIOD_CCCR_F1BLKSIZE_1, 0);
+    cyw43_write_reg_u8(self, BUS_FUNCTION, SDIOD_CCCR_F2BLKSIZE_0,
+                       AP6256_CYW43_SDIO_F2_BLOCK_SIZE & 0xFFU);
+    cyw43_write_reg_u8(self, BUS_FUNCTION, SDIOD_CCCR_F2BLKSIZE_1,
+                       (AP6256_CYW43_SDIO_F2_BLOCK_SIZE >> 8U) & 0xFFU);
 
     // Enable/Disable Client interrupts
     cyw43_write_reg_u8(self, BUS_FUNCTION, SDIOD_CCCR_INTEN, INTR_CTL_MASTER_EN | INTR_CTL_FUNC1_EN | INTR_CTL_FUNC2_EN);

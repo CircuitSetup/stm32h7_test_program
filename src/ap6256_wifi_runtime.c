@@ -175,6 +175,20 @@ static int ap6256_wifi_runtime_scan_cb(void *env, const cyw43_ev_scan_result_t *
     return 0;
 }
 
+static uint32_t ap6256_wifi_runtime_count_scan_results(void)
+{
+    uint32_t i;
+    uint32_t count = 0U;
+
+    for (i = 0U; i < AP6256_WIFI_MAX_SCAN_RESULTS; ++i) {
+        if (s_wifi_runtime.scan[i].valid != 0U) {
+            count++;
+        }
+    }
+
+    return count;
+}
+
 static void ap6256_wifi_runtime_sort_scan_results(void)
 {
     uint32_t i;
@@ -263,14 +277,19 @@ static bool ap6256_wifi_runtime_wait_for_scan_complete(uint32_t timeout_ms)
         }
 
         if ((HAL_GetTick() - start_ms) >= timeout_ms) {
+            if (ap6256_wifi_runtime_count_scan_results() > 0U) {
+                cyw43_state.wifi_scan_state = 2;
+                return true;
+            }
             return false;
         }
         if ((HAL_GetTick() - last_diag_ms) >= 1000U) {
             last_diag_ms = HAL_GetTick();
             ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_SCAN_WAIT,
                                                 (int32_t)(last_diag_ms - start_ms));
-            test_uart_printf("[ INFO ] wifi.connect stage: scan wait %lums ev=%lu/%lu/%lu pend=%u src=%s\r\n",
+            test_uart_printf("[ INFO ] wifi.connect stage: scan wait %lums results=%lu ev=%lu/%lu/%lu pend=%u src=%s\r\n",
                              (unsigned long)(last_diag_ms - start_ms),
+                             (unsigned long)ap6256_wifi_runtime_count_scan_results(),
                              (unsigned long)ap6256_cyw43_port_async_event_count(),
                              (unsigned long)ap6256_cyw43_port_last_async_event_type(),
                              (unsigned long)ap6256_cyw43_port_last_async_event_status(),
@@ -1110,6 +1129,11 @@ scan_start_retry:
     ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_SCAN_COMPLETE,
                                         s_wifi_runtime.last_scan_count);
     ap6256_connectivity_set_wifi_runtime(1U, 1U, s_wifi_runtime.last_scan_count, s_wifi_runtime.last_rssi);
+    if (summary != NULL) {
+        memset(summary, 0, sizeof(*summary));
+        summary->scan_results_count = s_wifi_runtime.last_scan_count;
+        summary->selected_rssi = s_wifi_runtime.last_rssi;
+    }
 
     if (s_wifi_runtime.last_scan_count == 0U) {
         (void)snprintf(detail, detail_len, "No Wi-Fi access points were found during the scan window.");
