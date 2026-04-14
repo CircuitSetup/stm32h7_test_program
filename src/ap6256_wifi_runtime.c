@@ -1611,6 +1611,7 @@ static ap6256_status_t ap6256_wifi_runtime_run_common(const char *ssid,
     uint8_t joined = 0U;
     uint8_t actual_assoc_channel = 0U;
     uint8_t actual_assoc_wifi5 = 0U;
+    uint8_t selected_is_5g = ap6256_wifi_runtime_channel_is_5g(channel);
 
     if ((ssid == NULL) || (ssid[0] == '\0')) {
         (void)snprintf(detail, detail_len, "No Wi-Fi SSID is available for this run.");
@@ -1659,10 +1660,10 @@ static ap6256_status_t ap6256_wifi_runtime_run_common(const char *ssid,
                              chanspec);
             join_bssid = bssid;
             /*
-             * Keep the raw scan chanspec for diagnostics, but use the stable
-             * channel-based join input here. Passing the raw BCM43456 5 GHz
-             * chanspec (for example 0xE09B) through the CYW43 join iovar
-             * reproducibly resets the AP6256 during the join ioctl wait.
+             * The scan parser now exposes the BSS primary/control channel in
+             * result->channel, matching brcmfmac's cfg80211-facing model. Carry
+             * that primary channel into the directed join while retaining the
+             * raw chanspec separately for PHY diagnostics.
              */
             join_channel = (uint32_t)channel;
         }
@@ -1962,75 +1963,32 @@ scan_start_retry:
         osDelay(20U);
     }
 
-    /*
-     * Keep the extra forced-band scan as an opt-in bench diagnostic. Hidden
-     * 5 GHz SSIDs are handled by the manual selection path below; forcing a
-     * second scan before the operator chooses a network can perturb the next
-     * join control path on AP6256.
-     */
-#if AP6256_WIFI_ENABLE_FORCED_5G_SCAN
     if (ap6256_wifi_runtime_has_5g_scan_result() == 0U) {
-        int band_rc;
-        uint8_t band_recovery_needed = 0U;
-
-        test_uart_write_str("[ INFO ] wifi.connect stage: start 5GHz scan\r\n");
-        band_rc = ap6256_wifi_runtime_set_ioctl_u32(AP6256_CYW43_IOCTL_SET_BAND, 1U); /* WLC_BAND_5G */
-        test_uart_printf("[ INFO ] wifi.connect stage: force 5GHz band rc=%d\r\n", band_rc);
-        if (band_rc == 0) {
-            memset(&opts, 0, sizeof(opts));
-            opts.scan_type = 0;
-            opts.channel_num = AP6256_WIFI_SCAN_FORCE_5G;
-            if (s_wifi_runtime.has_cached_profile != 0U) {
-                size_t cached_len = strlen(s_wifi_runtime.cached_ssid);
-
-                if ((cached_len > 0U) && (cached_len <= sizeof(opts.ssid))) {
-                    opts.ssid_len = (uint32_t)cached_len;
-                    memcpy(opts.ssid, s_wifi_runtime.cached_ssid, cached_len);
-                    test_uart_printf("[ INFO ] wifi.connect stage: directed 5GHz scan ssid=%s\r\n",
-                                     s_wifi_runtime.cached_ssid);
-                }
+        test_uart_write_str("[ INFO ] wifi.connect stage: start visible 5GHz scan\r\n");
+        memset(&opts, 0, sizeof(opts));
+        opts.scan_type = 0;
+        opts.channel_num = AP6256_WIFI_SCAN_FORCE_5G;
+        rc = cyw43_wifi_scan(&cyw43_state, &opts, NULL, ap6256_wifi_runtime_scan_cb);
+        if (rc == 0) {
+            ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_SCAN_ACCEPTED, 5);
+            if (!ap6256_wifi_runtime_wait_for_scan_complete(AP6256_WIFI_SCAN_TIMEOUT_MS)) {
+                test_uart_write_str("[ INFO ] wifi.connect stage: visible 5GHz scan timeout\r\n");
             }
-            rc = cyw43_wifi_scan(&cyw43_state, &opts, NULL, ap6256_wifi_runtime_scan_cb);
-            if (rc == 0) {
-                ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_SCAN_ACCEPTED, 5);
-                if (!ap6256_wifi_runtime_wait_for_scan_complete(AP6256_WIFI_SCAN_TIMEOUT_MS)) {
-                    test_uart_write_str("[ INFO ] wifi.connect stage: 5GHz scan timeout\r\n");
-                }
-                cyw43_state.wifi_scan_state = 0;
-                cyw43_state.wifi_scan_cb = NULL;
-                cyw43_state.wifi_scan_env = NULL;
-                for (uint32_t drain_ms = 0U; drain_ms < 500U; drain_ms += 20U) {
-                    ap6256_cyw43_port_poll();
-                    osDelay(20U);
-                }
-            } else {
-                test_uart_printf("[ INFO ] wifi.connect stage: 5GHz scan start failed rc=%d\r\n", rc);
+            cyw43_state.wifi_scan_state = 0;
+            cyw43_state.wifi_scan_cb = NULL;
+            cyw43_state.wifi_scan_env = NULL;
+            for (uint32_t drain_ms = 0U; drain_ms < 500U; drain_ms += 20U) {
+                ap6256_cyw43_port_poll();
+                osDelay(20U);
             }
+            ap6256_wifi_runtime_sort_scan_results();
         } else {
-            test_uart_write_str("[ INFO ] wifi.connect stage: skip 5GHz scan after band switch failure\r\n");
-            band_recovery_needed = 1U;
+            test_uart_printf("[ INFO ] wifi.connect stage: visible 5GHz scan start failed rc=%d\r\n", rc);
         }
-        band_rc = ap6256_wifi_runtime_set_ioctl_u32(AP6256_CYW43_IOCTL_SET_BAND, 0U); /* WLC_BAND_AUTO */
-        test_uart_printf("[ INFO ] wifi.connect stage: restore auto band rc=%d\r\n", band_rc);
-        if (band_rc != 0) {
-            band_recovery_needed = 1U;
-        }
-        if (band_recovery_needed != 0U) {
-            test_uart_write_str("[ INFO ] wifi.connect stage: recover after band restore failure\r\n");
-            ap6256_wifi_runtime_suspend();
-            if (!ap6256_wifi_runtime_ensure_ready(detail, detail_len)) {
-                ap6256_connectivity_set_wifi_note(detail);
-                ap6256_wifi_runtime_release_owner_with_breadcrumb(AP6256_CYW43_BREADCRUMB_RELEASE,
-                                                                  AP6256_STATUS_IO_ERROR);
-                return AP6256_STATUS_IO_ERROR;
-            }
+        if (ap6256_wifi_runtime_has_5g_scan_result() == 0U) {
+            test_uart_write_str("[ INFO ] wifi.connect stage: no visible 5GHz BSSID; hidden 5GHz SSID may be entered manually\r\n");
         }
     }
-#else
-    if (ap6256_wifi_runtime_has_5g_scan_result() == 0U) {
-        test_uart_write_str("[ INFO ] wifi.connect stage: no visible 5GHz BSSID; hidden 5GHz SSID may be entered manually\r\n");
-    }
-#endif
 
     ap6256_wifi_runtime_sort_scan_results();
     ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_SCAN_COMPLETE,
@@ -2155,22 +2113,28 @@ scan_start_retry:
 
     selected_copy = *selected;
     selected = &selected_copy;
-    /*
-     * BCM43456 delivers scan results through async ESCAN events, but the first
-     * normal control iovar after a scan can stall while firmware is unwinding
-     * scan state. Restart before association for every selected BSS, including
-     * hidden 5 GHz. The selected BSSID/channel/chanspec remains cached locally,
-     * which mirrors brcmfmac's model: scan identifies the BSS, join carries the
-     * selected BSS identity without depending on live scan context.
-     */
-    test_uart_printf("[ INFO ] wifi.connect stage: recover radio after %s scan before join\r\n",
-                     (ap6256_wifi_runtime_channel_is_5g(selected->channel) != 0U) ? "5GHz" : "visible");
-    ap6256_wifi_runtime_suspend();
-    if (!ap6256_wifi_runtime_ensure_ready(detail, detail_len)) {
-        ap6256_connectivity_set_wifi_note(detail);
-        ap6256_wifi_runtime_release_owner_with_breadcrumb(AP6256_CYW43_BREADCRUMB_RELEASE,
-                                                          AP6256_STATUS_IO_ERROR);
-        return AP6256_STATUS_IO_ERROR;
+    if (ap6256_wifi_runtime_channel_is_5g(selected->channel) != 0U) {
+        /*
+         * Hidden 5 GHz joins depend on firmware's just-populated scan/BSS
+         * cache. brcmfmac does not power-cycle between scan and connect; keep
+         * the radio live here and use the selected BSS metadata for validation.
+         */
+        test_uart_write_str("[ INFO ] wifi.connect stage: keep live 5GHz scan cache before join\r\n");
+    } else {
+        /*
+         * BCM43456 delivers scan results through async ESCAN events, but the
+         * first normal control iovar after a broad visible scan can stall while
+         * firmware is unwinding scan state. Restart before 2.4 GHz association;
+         * the selected BSSID/channel/chanspec remains cached locally.
+         */
+        test_uart_write_str("[ INFO ] wifi.connect stage: recover radio after visible scan before join\r\n");
+        ap6256_wifi_runtime_suspend();
+        if (!ap6256_wifi_runtime_ensure_ready(detail, detail_len)) {
+            ap6256_connectivity_set_wifi_note(detail);
+            ap6256_wifi_runtime_release_owner_with_breadcrumb(AP6256_CYW43_BREADCRUMB_RELEASE,
+                                                              AP6256_STATUS_IO_ERROR);
+            return AP6256_STATUS_IO_ERROR;
+        }
     }
 
     test_uart_write_str("[ INFO ] wifi.connect stage: join start\r\n");

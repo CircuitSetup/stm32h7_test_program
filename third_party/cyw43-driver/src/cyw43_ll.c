@@ -994,13 +994,15 @@ static void cyw43_ll_wifi_parse_scan_result(cyw43_async_event_t *ev) {
 
     ev->u.scan_result.chanspec = scan_res->bss.chanspec;
     /*
-     * Keep the legacy CYW43 channel field as chanspec low byte for now. The
-     * BCM43456 BSS record also exposes ctl_ch (primary channel), but feeding
-     * that primary 5 GHz channel into the current CYW43 join iovar path resets
-     * AP6256 during the join ioctl wait. Preserve raw chanspec for diagnostics
-     * while keeping the active join path on the known no-reset channel value.
+     * brcmfmac exposes the BSS primary/control channel to cfg80211 and keeps
+     * the raw chanspec as separate PHY metadata. BCM43456 reports 80 MHz BSS
+     * chanspecs with a center-channel-like low byte (for example 0xE09B),
+     * which is not the channel that should guide association. Use ctl_ch when
+     * firmware provides it, while preserving raw chanspec for diagnostics.
      */
-    ev->u.scan_result.channel = scan_res->bss.chanspec & 0xffU;
+    ev->u.scan_result.channel = (scan_res->bss.ctl_ch != 0U) ?
+                                scan_res->bss.ctl_ch :
+                                (scan_res->bss.chanspec & 0xffU);
     ev->u.scan_result.auth_mode = security;
     ev->u.scan_result.security_flags = security_flags;
     ev->u.scan_result.group_cipher_flags = group_flags;
@@ -4157,7 +4159,7 @@ static void ap6256_cyw43_drain_pending_packets(cyw43_int_t *self) {
 
 static uint16_t s_ap6256_scan_sync_id;
 
-static void ap6256_cyw43_escan_abort(cyw43_int_t *self) {
+static void __attribute__((unused)) ap6256_cyw43_escan_abort(cyw43_int_t *self) {
     cyw43_wifi_scan_options_t opts;
 
     memset(&opts, 0, sizeof(opts));
@@ -4255,8 +4257,21 @@ static void ap6256_cyw43_populate_dual_band_scan(ap6256_cyw43_escan_options_t *s
     scan->passive_time = -1;
     scan->home_time = -1;
 
-    channel_count = ap6256_cyw43_scan_channel_list(scan->channel_list, force_5g);
-    scan->channel_num = (int32_t)channel_count;
+    if (force_5g != 0U) {
+        /*
+         * Directed hidden-SSID 5 GHz scans need an explicit 5 GHz-only list so
+         * the firmware sends probe requests on the relevant band. For normal
+         * visible scans, mirror brcmfmac and leave channel_num at zero: firmware
+         * then scans its regulatory/current channel set itself. The old
+         * 38-channel host list started with 2.4 GHz and our bounded wait could
+         * return before channel 149+, hiding visible 5 GHz-only APs such as the
+         * doorbelkin fixture.
+         */
+        channel_count = ap6256_cyw43_scan_channel_list(scan->channel_list, force_5g);
+        scan->channel_num = (int32_t)channel_count;
+    } else {
+        scan->channel_num = 0;
+    }
 }
 
 int cyw43_ll_wifi_scan(cyw43_ll_t *self_in, cyw43_wifi_scan_options_t *opts) {
@@ -4299,7 +4314,14 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
     if (ret != 0) {
         return ret;
     }
-    ap6256_cyw43_escan_abort(self);
+    /*
+     * Do not unconditionally abort escan here. The public scan path clears
+     * wifi_scan_state after completion; sending a fresh abort immediately
+     * before hidden 5 GHz association produces ESCAN_RESULT(status=4) noise
+     * and has been correlated with AP6256 join resets. brcmfmac only aborts
+     * truly outstanding scan work before connect, which the runtime now handles
+     * before entering this low-level join call.
+     */
 
     /*
      * This is a throughput tuning knob, not an association prerequisite. On
@@ -4526,31 +4548,55 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
 
         // join the AP
         CYW43_VDEBUG("Join AP\n");
-        ret = cyw43_write_iovar_n(self, "join", 4 + 32 + 20 + 14, buf, WWD_STA_INTERFACE);
+        /*
+         * Mirror brcmfmac's ext_join sizing: assoc params stop at
+         * chanspec_list when no channel is supplied, and include exactly one
+         * u16 chanspec only when chanspec_num is one. Sending the trailing
+         * zero chanspec on AP6256 hidden 5 GHz joins can make the firmware drop
+         * the control response and push us into the less stable SET_SSID
+         * fallback path.
+         */
+        size_t join_len = 4 + 32 + 20 + 12;
+        if (channel != CYW43_CHANNEL_NONE) {
+            join_len += 2;
+        }
+        ret = cyw43_write_iovar_n(self, "join", join_len, buf, WWD_STA_INTERFACE);
         if (ret != 0) {
+            if (ap6256_join_no_response_ok(ret)) {
+                /*
+                 * For directed joins the command frame has already been sent.
+                 * Treat a lost control response like brcmfmac's successful
+                 * async join path and let subsequent auth/assoc/PSK events
+                 * prove whether the firmware accepted it. The SET_SSID
+                 * fallback is retained for explicit firmware rejections, but
+                 * it has proven reset-prone after AP6256 hidden 5 GHz joins.
+                 */
+                ret = 0;
+            } else {
             /*
              * Linux brcmfmac falls back to WLC_SET_SSID with
              * brcmf_join_params when the extended join iovar is rejected.
              * Keep the selected BSSID/channel in that fallback instead of
              * drifting to any same-SSID BSS.
              */
-            memset(buf, 0, 4 + 32 + 16);
-            cyw43_put_le32(buf, ssid_len);
-            memcpy(buf + 4, ssid, ssid_len);
-            memcpy(buf + 4 + 32, bssid, 6);
-            if (channel != CYW43_CHANNEL_NONE) {
-                cyw43_put_le32(buf + 4 + 32 + 8, 1); // chanspec_num
-                uint16_t chspec = ap6256_join_chanspec(channel);
-                cyw43_put_le16(buf + 4 + 32 + 12, chspec);
-                /*
-                 * brcmfmac sends sizeof(brcmf_join_params) once a chanspec
-                 * is present. That includes the aligned two-byte tail after
-                 * chanspec_list[0]; BCM43456 is less forgiving here than the
-                 * older CYW43 path, especially for hidden 5 GHz joins.
-                 */
-                ret = cyw43_do_ioctl(self, SDPCM_SET, WLC_SET_SSID, 4 + 32 + 16, buf, WWD_STA_INTERFACE);
-            } else {
-                ret = cyw43_do_ioctl(self, SDPCM_SET, WLC_SET_SSID, 4 + 32 + 12, buf, WWD_STA_INTERFACE);
+                memset(buf, 0, 4 + 32 + 16);
+                cyw43_put_le32(buf, ssid_len);
+                memcpy(buf + 4, ssid, ssid_len);
+                memcpy(buf + 4 + 32, bssid, 6);
+                if (channel != CYW43_CHANNEL_NONE) {
+                    cyw43_put_le32(buf + 4 + 32 + 8, 1); // chanspec_num
+                    uint16_t chspec = ap6256_join_chanspec(channel);
+                    cyw43_put_le16(buf + 4 + 32 + 12, chspec);
+                    /*
+                     * brcmfmac sends sizeof(brcmf_join_params) once a chanspec
+                     * is present. That includes the aligned two-byte tail after
+                     * chanspec_list[0]; BCM43456 is less forgiving here than the
+                     * older CYW43 path, especially for hidden 5 GHz joins.
+                     */
+                    ret = cyw43_do_ioctl(self, SDPCM_SET, WLC_SET_SSID, 4 + 32 + 16, buf, WWD_STA_INTERFACE);
+                } else {
+                    ret = cyw43_do_ioctl(self, SDPCM_SET, WLC_SET_SSID, 4 + 32 + 12, buf, WWD_STA_INTERFACE);
+                }
             }
         }
     } else {
