@@ -4,6 +4,7 @@
 #include "ap6256_cyw43_compat.h"
 #include "ap6256_cyw43_port.h"
 #include "ap6256_wifi_runtime.h"
+#include "cyw43.h"
 #include "network_manager.h"
 #include "test_uart.h"
 
@@ -329,6 +330,44 @@ void ap6256_connectivity_set_wifi_ip(const char *ip,
     s_wifi_state.last_update_ms = HAL_GetTick();
 }
 
+void ap6256_connectivity_set_wifi_selection_diag(const uint8_t bssid[6],
+                                                 uint16_t channel,
+                                                 uint8_t selected_5g,
+                                                 const char *fixture_classification)
+{
+    if (bssid != NULL) {
+        memcpy(s_wifi_state.runtime_selected_bssid, bssid, sizeof(s_wifi_state.runtime_selected_bssid));
+    } else {
+        memset(s_wifi_state.runtime_selected_bssid, 0, sizeof(s_wifi_state.runtime_selected_bssid));
+    }
+    s_wifi_state.runtime_selected_channel = (uint8_t)((channel <= 255U) ? channel : 0U);
+    s_wifi_state.runtime_selected_5g = (selected_5g != 0U) ? 1U : 0U;
+    ap6256_connectivity_copy_text(s_wifi_state.runtime_fixture_classification,
+                                  sizeof(s_wifi_state.runtime_fixture_classification),
+                                  fixture_classification);
+    s_wifi_state.last_update_ms = HAL_GetTick();
+}
+
+void ap6256_connectivity_set_wifi_selection_security_diag(uint8_t auth_mode,
+                                                          uint8_t security_flags,
+                                                          uint16_t akm_flags,
+                                                          uint16_t pairwise_flags,
+                                                          uint16_t group_flags,
+                                                          uint8_t mfp,
+                                                          uint16_t rsn_cap,
+                                                          uint16_t chanspec)
+{
+    s_wifi_state.runtime_selected_auth_mode = auth_mode;
+    s_wifi_state.runtime_selected_security_flags = security_flags;
+    s_wifi_state.runtime_selected_akm_flags = akm_flags;
+    s_wifi_state.runtime_selected_pairwise_flags = pairwise_flags;
+    s_wifi_state.runtime_selected_group_flags = group_flags;
+    s_wifi_state.runtime_selected_mfp = mfp;
+    s_wifi_state.runtime_selected_rsn_cap = rsn_cap;
+    s_wifi_state.runtime_selected_chanspec = chanspec;
+    s_wifi_state.last_update_ms = HAL_GetTick();
+}
+
 void ap6256_connectivity_set_wifi_phy_diag(uint8_t valid,
                                            uint8_t assoc_channel,
                                            uint8_t assoc_5g,
@@ -596,6 +635,74 @@ const char *ap6256_connectivity_wifi_security_name(ap6256_wifi_security_t securi
     }
 }
 
+static const char *ap6256_connectivity_scan_auth_name(uint8_t auth_mode)
+{
+    if ((auth_mode & 0x04U) != 0U) {
+        return "wpa2";
+    }
+    if ((auth_mode & 0x02U) != 0U) {
+        return "wpa";
+    }
+    if ((auth_mode & 0x01U) != 0U) {
+        return "wep";
+    }
+    return "open";
+}
+
+static const char *ap6256_connectivity_scan_mfp_name(uint8_t mfp)
+{
+    if (mfp == CYW43_SCAN_MFP_REQUIRED) {
+        return "required";
+    }
+    if (mfp == CYW43_SCAN_MFP_CAPABLE) {
+        return "capable";
+    }
+    return "none";
+}
+
+static const char *ap6256_connectivity_scan_akm_name(uint16_t akm_flags)
+{
+    if ((akm_flags & CYW43_SCAN_AKM_SAE) != 0U) {
+        if ((akm_flags & (CYW43_SCAN_AKM_PSK | CYW43_SCAN_AKM_PSK_SHA256)) != 0U) {
+            return "psk+sae";
+        }
+        return "sae";
+    }
+    if ((akm_flags & CYW43_SCAN_AKM_PSK_SHA256) != 0U) {
+        return "psk-sha256";
+    }
+    if ((akm_flags & CYW43_SCAN_AKM_PSK) != 0U) {
+        return "psk";
+    }
+    if ((akm_flags & (CYW43_SCAN_AKM_8021X | CYW43_SCAN_AKM_8021X_SHA256)) != 0U) {
+        return "802.1x";
+    }
+    if ((akm_flags & CYW43_SCAN_AKM_OWE) != 0U) {
+        return "owe";
+    }
+    return "unknown";
+}
+
+static const char *ap6256_connectivity_scan_cipher_name(uint16_t cipher_flags)
+{
+    if ((cipher_flags & CYW43_SCAN_CIPHER_CCMP) != 0U) {
+        if ((cipher_flags & CYW43_SCAN_CIPHER_TKIP) != 0U) {
+            return "ccmp+tkip";
+        }
+        return "ccmp";
+    }
+    if ((cipher_flags & CYW43_SCAN_CIPHER_TKIP) != 0U) {
+        return "tkip";
+    }
+    if ((cipher_flags & CYW43_SCAN_CIPHER_GCMP) != 0U) {
+        return "gcmp";
+    }
+    if ((cipher_flags & (CYW43_SCAN_CIPHER_WEP40 | CYW43_SCAN_CIPHER_WEP104)) != 0U) {
+        return "wep";
+    }
+    return "unknown";
+}
+
 void ap6256_connectivity_print_wifi_info(void)
 {
     const ap6256_wifi_state_t *state = &s_wifi_state;
@@ -654,6 +761,30 @@ void ap6256_connectivity_print_wifi_info(void)
                      (state->leased_ip[0] != '\0') ? state->leased_ip : "n/a",
                      (state->leased_mask[0] != '\0') ? state->leased_mask : "n/a",
                      (state->leased_gateway[0] != '\0') ? state->leased_gateway : "n/a");
+    test_uart_printf("  Wi-Fi selection: bssid=%02X:%02X:%02X:%02X:%02X:%02X ch=%u band=%s fixture=%s\r\n",
+                     state->runtime_selected_bssid[0],
+                     state->runtime_selected_bssid[1],
+                     state->runtime_selected_bssid[2],
+                     state->runtime_selected_bssid[3],
+                     state->runtime_selected_bssid[4],
+                     state->runtime_selected_bssid[5],
+                     state->runtime_selected_channel,
+                     (state->runtime_selected_5g != 0U) ? "5GHz" :
+                         ((state->runtime_selected_channel != 0U) ? "2.4GHz" : "n/a"),
+                     (state->runtime_fixture_classification[0] != '\0') ?
+                         state->runtime_fixture_classification : "n/a");
+    test_uart_printf("  Wi-Fi BSS security: sec=%s flags=0x%02X akm=%s(0x%04X) pair=%s(0x%04X) group=%s(0x%04X) mfp=%s rsncap=0x%04X chanspec=0x%04X\r\n",
+                     ap6256_connectivity_scan_auth_name(state->runtime_selected_auth_mode),
+                     state->runtime_selected_security_flags,
+                     ap6256_connectivity_scan_akm_name(state->runtime_selected_akm_flags),
+                     state->runtime_selected_akm_flags,
+                     ap6256_connectivity_scan_cipher_name(state->runtime_selected_pairwise_flags),
+                     state->runtime_selected_pairwise_flags,
+                     ap6256_connectivity_scan_cipher_name(state->runtime_selected_group_flags),
+                     state->runtime_selected_group_flags,
+                     ap6256_connectivity_scan_mfp_name(state->runtime_selected_mfp),
+                     state->runtime_selected_rsn_cap,
+                     state->runtime_selected_chanspec);
     test_uart_printf("  Wi-Fi PHY: valid=%u assoc_ch=%u band=%s chanspec=0x%04lX nmode=%lu vhtmode=%lu wifi5_capable=%u assoc_wifi5=%u wl_band=%lu\r\n",
                      state->runtime_phy_valid,
                      state->runtime_assoc_channel,

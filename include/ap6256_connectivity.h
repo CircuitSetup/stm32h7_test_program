@@ -30,6 +30,18 @@ typedef struct {
     char leased_ip[16];
     char leased_mask[16];
     char leased_gateway[16];
+    uint8_t runtime_selected_bssid[6];
+    uint8_t runtime_selected_channel;
+    uint8_t runtime_selected_5g;
+    char runtime_fixture_classification[32];
+    uint8_t runtime_selected_auth_mode;
+    uint8_t runtime_selected_security_flags;
+    uint8_t runtime_selected_mfp;
+    uint16_t runtime_selected_akm_flags;
+    uint16_t runtime_selected_pairwise_flags;
+    uint16_t runtime_selected_group_flags;
+    uint16_t runtime_selected_rsn_cap;
+    uint16_t runtime_selected_chanspec;
     uint8_t runtime_phy_valid;
     uint8_t runtime_assoc_channel;
     uint8_t runtime_assoc_5g;
@@ -174,6 +186,18 @@ void ap6256_connectivity_set_wifi_ip(const char *ip,
                                      const char *mask,
                                      const char *gateway,
                                      uint8_t dhcp_bound);
+void ap6256_connectivity_set_wifi_selection_diag(const uint8_t bssid[6],
+                                                 uint16_t channel,
+                                                 uint8_t selected_5g,
+                                                 const char *fixture_classification);
+void ap6256_connectivity_set_wifi_selection_security_diag(uint8_t auth_mode,
+                                                          uint8_t security_flags,
+                                                          uint16_t akm_flags,
+                                                          uint16_t pairwise_flags,
+                                                          uint16_t group_flags,
+                                                          uint8_t mfp,
+                                                          uint16_t rsn_cap,
+                                                          uint16_t chanspec);
 void ap6256_connectivity_set_wifi_phy_diag(uint8_t valid,
                                            uint8_t assoc_channel,
                                            uint8_t assoc_5g,

@@ -151,6 +151,8 @@ uint32_t ap6256_cyw43_port_last_cmd53_length(void);
 int32_t ap6256_cyw43_port_last_cmd53_status(void);
 uint16_t ap6256_cyw43_port_last_cmd53_frame_size(void);
 uint32_t ap6256_cyw43_port_last_cmd53_count(void);
+uint32_t ap6256_cyw43_port_runtime_f2_block_size(void);
+void ap6256_cyw43_port_set_runtime_f2_block_size(uint32_t block_size);
 void ap6256_cyw43_port_record_last_cmd(uint32_t cmd, uint32_t arg, int32_t status, uint32_t response);
 uint32_t ap6256_cyw43_port_last_cmd(void);
 uint32_t ap6256_cyw43_port_last_cmd_arg(void);

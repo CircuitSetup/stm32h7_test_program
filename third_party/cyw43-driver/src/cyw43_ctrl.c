@@ -659,18 +659,20 @@ int cyw43_wifi_scan(cyw43_t *self, cyw43_wifi_scan_options_t *opts, void *env, i
         return ret;
     }
 
-    // Set callback data before starting, but only mark the scan active after
-    // firmware accepts the escan request. This keeps failed scan-start ioctls
-    // from leaving the manufacturing command in a stale active-scan state.
-    self->wifi_scan_state = 0;
+    /*
+     * BCM43456 can emit ESCAN_RESULT events before the escan iovar returns on
+     * the CYW43 SDIO path. Arm the scan state before sending so partial results
+     * observed during the bounded ioctl wait are not discarded. Failure paths
+     * below still clear the callback/state, keeping scan-start containment.
+     */
+    self->wifi_scan_state = 1;
     self->wifi_scan_env = env;
     self->wifi_scan_cb = result_cb;
 
     // Start the scan
     ret = cyw43_ll_wifi_scan(&self->cyw43_ll, opts);
-    if (ret == 0) {
-        self->wifi_scan_state = 1;
-    } else {
+    if (ret != 0) {
+        self->wifi_scan_state = 0;
         self->wifi_scan_env = NULL;
         self->wifi_scan_cb = NULL;
     }

@@ -46,6 +46,7 @@ static volatile uint32_t s_cyw43_last_cmd53_length;
 static volatile int32_t s_cyw43_last_cmd53_status;
 static volatile uint16_t s_cyw43_last_cmd53_frame_size;
 static volatile uint32_t s_cyw43_last_cmd53_count;
+static volatile uint32_t s_cyw43_runtime_f2_block_size = AP6256_CYW43_SDIO_F2_BLOCK_SIZE;
 static volatile uint32_t s_cyw43_last_cmd;
 static volatile uint32_t s_cyw43_last_cmd_arg;
 static volatile int32_t s_cyw43_last_cmd_status;
@@ -1904,4 +1905,20 @@ uint16_t ap6256_cyw43_port_last_cmd53_frame_size(void)
 uint32_t ap6256_cyw43_port_last_cmd53_count(void)
 {
     return s_cyw43_last_cmd53_count;
+}
+
+uint32_t ap6256_cyw43_port_runtime_f2_block_size(void)
+{
+    if (s_cyw43_runtime_f2_block_size == 0U) {
+        return AP6256_CYW43_SDIO_F2_BLOCK_SIZE;
+    }
+    return s_cyw43_runtime_f2_block_size;
+}
+
+void ap6256_cyw43_port_set_runtime_f2_block_size(uint32_t block_size)
+{
+    if ((block_size == 64U) || (block_size == 128U) ||
+        (block_size == 256U) || (block_size == 512U)) {
+        s_cyw43_runtime_f2_block_size = block_size;
+    }
 }

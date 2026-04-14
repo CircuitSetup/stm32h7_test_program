@@ -36,12 +36,13 @@
 #include "cyw43.h"
 #include "cyw43_internal.h"
 #include "cyw43_sdio.h"
+#include "ap6256_cyw43_port.h"
 
 #if !CYW43_USE_SPI
 
 static uint32_t cyw43_sdio_function_block_size(uint32_t fn) {
     if (fn == 2) {
-        return AP6256_CYW43_SDIO_F2_BLOCK_SIZE;
+        return ap6256_cyw43_port_runtime_f2_block_size();
     }
     return AP6256_CYW43_SDIO_F1_BLOCK_SIZE;
 }

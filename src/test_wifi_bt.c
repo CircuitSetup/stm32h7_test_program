@@ -249,6 +249,12 @@ void test_bt_uart_hci(board_test_result_t *result)
     uint8_t bt_hci_ok;
 
     memset(&diag, 0, sizeof(diag));
+    /*
+     * The BLE qualification path owns USART3 through BTstack. Power-cycle and
+     * tear down any residual BTstack UART state before the raw diagnostic probe
+     * so bt.hci reports the controller, not a half-closed runtime.
+     */
+    ap6256_bt_runtime_suspend();
     st = ap6256_connectivity_probe_bt_transport(&diag);
     state = ap6256_connectivity_get_bt_state();
     bt_hci_ok = ((st == AP6256_STATUS_OK) &&

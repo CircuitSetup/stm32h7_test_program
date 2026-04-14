@@ -175,6 +175,30 @@
 #define CYW43_AUTH_WPA3_WPA2_AES_PSK (0x01400004)   ///< WPA2/WPA3 authorisation
 //!\}
 
+// Scan-result security details. These are intentionally compact so embedded
+// diagnostics can expose brcmfmac-style RSN/WPA facts without carrying full IEs.
+#define CYW43_SCAN_SEC_WEP        (0x01u)
+#define CYW43_SCAN_SEC_WPA        (0x02u)
+#define CYW43_SCAN_SEC_RSN        (0x04u)
+
+#define CYW43_SCAN_CIPHER_WEP40   (0x0001u)
+#define CYW43_SCAN_CIPHER_TKIP    (0x0002u)
+#define CYW43_SCAN_CIPHER_CCMP    (0x0004u)
+#define CYW43_SCAN_CIPHER_WEP104  (0x0008u)
+#define CYW43_SCAN_CIPHER_BIP     (0x0010u)
+#define CYW43_SCAN_CIPHER_GCMP    (0x0020u)
+
+#define CYW43_SCAN_AKM_8021X      (0x0001u)
+#define CYW43_SCAN_AKM_PSK        (0x0002u)
+#define CYW43_SCAN_AKM_PSK_SHA256 (0x0004u)
+#define CYW43_SCAN_AKM_8021X_SHA256 (0x0008u)
+#define CYW43_SCAN_AKM_SAE        (0x0010u)
+#define CYW43_SCAN_AKM_OWE        (0x0020u)
+
+#define CYW43_SCAN_MFP_NONE       (0u)
+#define CYW43_SCAN_MFP_CAPABLE    (1u)
+#define CYW43_SCAN_MFP_REQUIRED   (2u)
+
 /*!
  * \brief Power save mode parameter passed to cyw43_ll_wifi_pm
  */
@@ -224,6 +248,13 @@ typedef struct _cyw43_ev_scan_result_t {
     uint16_t _3;
     uint8_t auth_mode;  ///< wifi auth mode \ref CYW43_AUTH_
     int16_t rssi;       ///< signal strength
+    uint16_t chanspec;  ///< raw Broadcom chanspec from scan result
+    uint16_t rsn_cap;   ///< RSN capabilities field, if present
+    uint16_t pairwise_cipher_flags; ///< CYW43_SCAN_CIPHER_* bitmask
+    uint16_t group_cipher_flags;    ///< CYW43_SCAN_CIPHER_* bitmask
+    uint16_t akm_flags;             ///< CYW43_SCAN_AKM_* bitmask
+    uint8_t mfp;                    ///< CYW43_SCAN_MFP_*
+    uint8_t security_flags;         ///< CYW43_SCAN_SEC_* bitmask
 } cyw43_ev_scan_result_t;
 //!\}
 
