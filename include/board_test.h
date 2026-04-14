@@ -19,6 +19,7 @@ void board_test_run_group(const char *group_name);
 void board_test_run_named(const char *test_name);
 void board_test_run_ade_index(uint8_t index);
 void board_test_run_analog_fixture(void);
+void board_test_run_wifi_profile(const char *ssid, const char *password, uint16_t preferred_channel);
 void board_test_print_summary(void);
 void board_test_print_confidence_info(void);
 void board_test_list_tests(void);

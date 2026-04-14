@@ -523,6 +523,90 @@ void board_test_run_analog_fixture(void)
     log_case_done(&result, HAL_GetTick() - start_ms);
 }
 
+void board_test_run_wifi_profile(const char *ssid, const char *password, uint16_t preferred_channel)
+{
+    board_test_result_t result;
+    uint32_t start_ms;
+    ap6256_wifi_runtime_summary_t summary;
+    ap6256_wifi_diag_t diag;
+    ap6256_status_t st;
+    char measured[160];
+    char detail[160];
+    const board_test_case_t tc = { "wifi.connect", "wifi", "AP6256", TEST_MODE_AUTOMATIC, NULL };
+
+    if ((ssid == NULL) || (ssid[0] == '\0')) {
+        test_uart_write_str("Usage: run wifi <ssid> [password] [channel]\r\n");
+        return;
+    }
+
+    memset(&summary, 0, sizeof(summary));
+    memset(&diag, 0, sizeof(diag));
+    memset(detail, 0, sizeof(detail));
+    memset(measured, 0, sizeof(measured));
+
+    log_case_start(&tc, 1U, 1U);
+    start_ms = HAL_GetTick();
+    test_uart_write_str("[ INFO ] wifi.connect stage: transport preflight\r\n");
+    st = ap6256_connectivity_probe_wifi_transport(&diag);
+    if ((st != AP6256_STATUS_OK) || (diag.cmd5_ready == 0U)) {
+        (void)snprintf(measured,
+                       sizeof(measured),
+                       "st=%s,wp=%u,bp=%u,ocr=%08lX,c5=%u,c52=%u",
+                       ap6256_status_to_string(st),
+                       diag.wl_pin_level,
+                       diag.bt_pin_level,
+                       (unsigned long)diag.ocr,
+                       diag.cmd5_ready,
+                       diag.cccr_read_ok);
+        board_test_set_result(&result,
+                              "wifi.connect",
+                              "AP6256 Wi-Fi",
+                              TEST_STATUS_FAIL,
+                              TEST_MODE_AUTOMATIC,
+                              measured,
+                              "AP6256 Wi-Fi transport preflight failed before any scan/join attempt.",
+                              "Check WL_REG_ON path, SDMMC1 routing, and 3V3_WIFI rail.");
+        append_result(NULL, &result);
+        board_test_log_result(&result);
+        log_case_done(&result, HAL_GetTick() - start_ms);
+        return;
+    }
+
+    if (preferred_channel != 0U) {
+        test_uart_printf("[ INFO ] wifi.connect stage: runtime profile start ssid=%s channel=%u\r\n",
+                         ssid,
+                         (unsigned)preferred_channel);
+    } else {
+        test_uart_printf("[ INFO ] wifi.connect stage: runtime profile start ssid=%s\r\n", ssid);
+    }
+    st = ap6256_wifi_runtime_run_profile(ssid,
+                                         password,
+                                         preferred_channel,
+                                         &summary,
+                                         detail,
+                                         sizeof(detail));
+    (void)snprintf(measured,
+                   sizeof(measured),
+                   "st=%s,scan=%u,rssi=%d,ssid=%s,ip=%s",
+                   ap6256_status_to_string(st),
+                   summary.scan_results_count,
+                   (int)summary.selected_rssi,
+                   (summary.selected_ssid[0] != '\0') ? summary.selected_ssid : "n/a",
+                   (summary.leased_ip[0] != '\0') ? summary.leased_ip : "n/a");
+    board_test_set_result(&result,
+                          "wifi.connect",
+                          "AP6256 Wi-Fi",
+                          (st == AP6256_STATUS_OK) ? TEST_STATUS_PASS : TEST_STATUS_FAIL,
+                          TEST_MODE_AUTOMATIC,
+                          measured,
+                          detail,
+                          (st == AP6256_STATUS_OK) ? "" :
+                              "Check AP6256 Wi-Fi transport, firmware assets, selected SSID/BSSID, credentials, and DHCP availability.");
+    append_result(NULL, &result);
+    board_test_log_result(&result);
+    log_case_done(&result, HAL_GetTick() - start_ms);
+}
+
 void board_test_print_summary(void)
 {
     size_t i;

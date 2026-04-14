@@ -1,6 +1,7 @@
 #include "test_console.h"
 
 #include "board_test.h"
+#include "ap6256_wifi_runtime.h"
 #include "cmsis_os2.h"
 #include "main.h"
 #include "network_manager.h"
@@ -48,6 +49,7 @@ static void print_help(void)
     test_uart_write_str("  help\r\n");
     test_uart_write_str("  run_all\r\n");
     test_uart_write_str("  run <group|test_name>\r\n");
+    test_uart_write_str("  run wifi <ssid> [password] [channel]\r\n");
     test_uart_write_str("  run ade <index>\r\n");
     test_uart_write_str("  run analog_fixture\r\n");
     test_uart_write_str("  list\r\n");
@@ -58,6 +60,7 @@ static void print_help(void)
     test_uart_write_str("  run usb\r\n");
     test_uart_write_str("  eth_info\r\n");
     test_uart_write_str("  wifi_info\r\n");
+    test_uart_write_str("  wifi_nvram ap6256|generic\r\n");
     test_uart_write_str("  bt_info\r\n");
     test_uart_write_str("  radio_info\r\n");
     test_uart_write_str("  confidence_info\r\n");
@@ -70,7 +73,7 @@ static void print_help(void)
     test_uart_write_str("  reboot\r\n\r\n");
 }
 
-static void handle_run_command(char *arg1, char *arg2)
+static void handle_run_command(char *arg1, char *arg2, char *arg3, char *arg4)
 {
     if ((arg1 == NULL) || (arg1[0] == '\0')) {
         test_uart_write_str("Usage: run <group|test_name>\r\n");
@@ -90,6 +93,20 @@ static void handle_run_command(char *arg1, char *arg2)
             return;
         }
         test_uart_write_str("ADE index must be 1..8\r\n");
+        return;
+    }
+
+    if (str_ieq(arg1, "wifi") && (arg2 != NULL) && (arg2[0] != '\0')) {
+        uint16_t preferred_channel = 0U;
+        if ((arg4 != NULL) && (arg4[0] != '\0')) {
+            unsigned long parsed = strtoul(arg4, NULL, 0);
+            if ((parsed == 0UL) || (parsed > 255UL)) {
+                test_uart_write_str("Wi-Fi channel must be 1..255 when provided.\r\n");
+                return;
+            }
+            preferred_channel = (uint16_t)parsed;
+        }
+        board_test_run_wifi_profile(arg2, (arg3 != NULL) ? arg3 : "", preferred_channel);
         return;
     }
 
@@ -129,6 +146,7 @@ static void handle_command(char *line)
     char *arg1;
     char *arg2;
     char *arg3;
+    char *arg4;
 
     cmd = strtok(line, " \t");
     if (cmd == NULL) {
@@ -138,6 +156,7 @@ static void handle_command(char *line)
     arg1 = strtok(NULL, " \t");
     arg2 = strtok(NULL, " \t");
     arg3 = strtok(NULL, " \t");
+    arg4 = strtok(NULL, " \t");
 
     if (str_ieq(cmd, "help")) {
         print_help();
@@ -151,7 +170,7 @@ static void handle_command(char *line)
     }
 
     if (str_ieq(cmd, "run")) {
-        handle_run_command(arg1, arg2);
+        handle_run_command(arg1, arg2, arg3, arg4);
         return;
     }
 
@@ -187,6 +206,21 @@ static void handle_command(char *line)
 
     if (str_ieq(cmd, "wifi_info")) {
         test_wifi_print_info();
+        return;
+    }
+
+    if (str_ieq(cmd, "wifi_nvram")) {
+        if ((arg1 != NULL) && str_ieq(arg1, "ap6256")) {
+            ap6256_wifi_runtime_set_reference_nvram(0U);
+            test_uart_write_str("Wi-Fi runtime NVRAM: ap6256 (runtime default)\r\n");
+            return;
+        }
+        if ((arg1 != NULL) && str_ieq(arg1, "generic")) {
+            ap6256_wifi_runtime_set_reference_nvram(1U);
+            test_uart_write_str("Wi-Fi runtime NVRAM: generic (manual fallback)\r\n");
+            return;
+        }
+        test_uart_write_str("Usage: wifi_nvram ap6256|generic\r\n");
         return;
     }
 

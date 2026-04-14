@@ -26,6 +26,12 @@ uint8_t ap6256_wifi_runtime_reference_nvram_enabled(void);
 ap6256_status_t ap6256_wifi_runtime_run_interactive(ap6256_wifi_runtime_summary_t *summary,
                                                     char *detail,
                                                     size_t detail_len);
+ap6256_status_t ap6256_wifi_runtime_run_profile(const char *ssid,
+                                                const char *password,
+                                                uint16_t preferred_channel,
+                                                ap6256_wifi_runtime_summary_t *summary,
+                                                char *detail,
+                                                size_t detail_len);
 ap6256_status_t ap6256_wifi_runtime_run_cached(ap6256_wifi_runtime_summary_t *summary,
                                                char *detail,
                                                size_t detail_len);
