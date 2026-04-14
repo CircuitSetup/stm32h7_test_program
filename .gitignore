@@ -2,3 +2,5 @@
 /.vscode
 /include/generated/
 /src/generated/
+scripts/hil_rtt_command.py
+scripts/test_ap6256_join_payload.py

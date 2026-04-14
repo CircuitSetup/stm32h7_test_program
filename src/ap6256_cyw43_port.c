@@ -94,7 +94,14 @@ static volatile uint8_t s_cyw43_backplane_is_write;
 static volatile uint32_t s_cyw43_backplane_address;
 static volatile uint8_t s_cyw43_backplane_width_bytes;
 static volatile int32_t s_cyw43_backplane_status;
-static volatile uint8_t s_cyw43_reference_nvram_enabled = 0U;
+/*
+ * Recovery default: the last hardware log that completed 2.4 GHz association
+ * and DHCP used the generic brcmfmac43456-sdio.txt NVRAM path. Keep the
+ * AP6256-specific reference NVRAM available through the existing toggle, but
+ * boot the Wi-Fi runtime from the known-good asset while we restore baseline
+ * connectivity.
+ */
+static volatile uint8_t s_cyw43_reference_nvram_enabled = 1U;
 static volatile uint32_t s_cyw43_last_async_event_type;
 static volatile uint32_t s_cyw43_last_async_event_status;
 static volatile uint32_t s_cyw43_last_async_event_reason;
@@ -143,6 +150,7 @@ static volatile uint8_t s_cyw43_ioctl_recovery_attempted;
 static volatile uint8_t s_cyw43_ioctl_forced_probe_attempted;
 static volatile uint8_t s_cyw43_ioctl_resend_attempted;
 static volatile uint32_t s_cyw43_last_pre_reset_persist_tick;
+static ap6256_cyw43_control_tx_diag_t s_cyw43_control_tx_diag;
 
 static void ap6256_cyw43_enable_backup_access(void)
 {
@@ -453,6 +461,14 @@ const char *ap6256_cyw43_port_breadcrumb_name(uint32_t stage)
         return "cmd52";
     case AP6256_CYW43_BREADCRUMB_SCAN_RETURN:
         return "scan_return";
+    case AP6256_CYW43_BREADCRUMB_JOIN_START:
+        return "join_start";
+    case AP6256_CYW43_BREADCRUMB_JOIN_WAIT:
+        return "join_wait";
+    case AP6256_CYW43_BREADCRUMB_JOIN_TIMEOUT:
+        return "join_timeout";
+    case AP6256_CYW43_BREADCRUMB_JOIN_RESULT:
+        return "join_result";
     case AP6256_CYW43_BREADCRUMB_HARDFAULT:
         return "hardfault";
     case AP6256_CYW43_BREADCRUMB_MEMMANAGE:
@@ -1796,6 +1812,54 @@ uint8_t ap6256_cyw43_port_ioctl_resend_attempted(void)
     return s_cyw43_ioctl_resend_attempted;
 }
 
+void ap6256_cyw43_port_record_control_tx_frame(uint32_t kind,
+                                               uint32_t cmd,
+                                               uint32_t iface,
+                                               uint32_t len,
+                                               uint32_t id,
+                                               uint32_t sdpcm_len,
+                                               uint32_t transfer_len,
+                                               uint32_t block_size,
+                                               const uint8_t *frame,
+                                               uint32_t frame_len)
+{
+    uint32_t copy_len = frame_len;
+    uint32_t checksum = 2166136261UL;
+
+    if (copy_len > sizeof(s_cyw43_control_tx_diag.first64)) {
+        copy_len = sizeof(s_cyw43_control_tx_diag.first64);
+    }
+
+    memset(&s_cyw43_control_tx_diag, 0, sizeof(s_cyw43_control_tx_diag));
+    s_cyw43_control_tx_diag.valid = 1U;
+    s_cyw43_control_tx_diag.kind = kind;
+    s_cyw43_control_tx_diag.cmd = cmd;
+    s_cyw43_control_tx_diag.iface = iface;
+    s_cyw43_control_tx_diag.len = len;
+    s_cyw43_control_tx_diag.id = id;
+    s_cyw43_control_tx_diag.sdpcm_len = sdpcm_len;
+    s_cyw43_control_tx_diag.transfer_len = transfer_len;
+    s_cyw43_control_tx_diag.block_size = block_size;
+
+    if ((frame != NULL) && (copy_len != 0U)) {
+        memcpy(s_cyw43_control_tx_diag.first64, frame, copy_len);
+        for (uint32_t i = 0U; i < frame_len; ++i) {
+            checksum ^= frame[i];
+            checksum *= 16777619UL;
+        }
+    }
+    s_cyw43_control_tx_diag.checksum = checksum;
+    ap6256_cyw43_port_persist_pre_reset_diag(0U);
+}
+
+void ap6256_cyw43_port_get_control_tx_diag(ap6256_cyw43_control_tx_diag_t *diag)
+{
+    if (diag == NULL) {
+        return;
+    }
+    *diag = s_cyw43_control_tx_diag;
+}
+
 void ap6256_cyw43_port_get_pre_reset_diag(ap6256_cyw43_pre_reset_diag_t *diag)
 {
     ap6256_cyw43_port_read_pre_reset_diag(diag);
@@ -1921,4 +1985,17 @@ void ap6256_cyw43_port_set_runtime_f2_block_size(uint32_t block_size)
         (block_size == 256U) || (block_size == 512U)) {
         s_cyw43_runtime_f2_block_size = block_size;
     }
+}
+
+int32_t ap6256_cyw43_port_apply_runtime_f2_block_size(void)
+{
+    ap6256_status_t st;
+    uint32_t block_size = ap6256_cyw43_port_runtime_f2_block_size();
+
+    st = ap6256_sdio_set_block_size(2U, (uint16_t)block_size);
+    if (st != AP6256_STATUS_OK) {
+        return ap6256_cyw43_status_to_errno(st);
+    }
+
+    return 0;
 }

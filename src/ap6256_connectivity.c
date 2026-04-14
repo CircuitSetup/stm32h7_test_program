@@ -133,6 +133,8 @@ static const char *ap6256_connectivity_ioctl_phase_name(uint32_t phase)
         return "send_credit_timeout";
     case AP6256_CYW43_IOCTL_PHASE_ACCEPTED_ASYNC:
         return "accepted_async";
+    case AP6256_CYW43_IOCTL_PHASE_TX_ACCEPTED:
+        return "tx_accepted";
     default:
         return "unknown";
     }
@@ -707,11 +709,14 @@ void ap6256_connectivity_print_wifi_info(void)
 {
     const ap6256_wifi_state_t *state = &s_wifi_state;
     ap6256_cyw43_pre_reset_diag_t pre_reset;
+    ap6256_cyw43_control_tx_diag_t tx_diag;
     char breadcrumb_reset_flags[64];
     char boot_reset_flags[64];
 
     memset(&pre_reset, 0, sizeof(pre_reset));
     ap6256_cyw43_port_get_pre_reset_diag(&pre_reset);
+    memset(&tx_diag, 0, sizeof(tx_diag));
+    ap6256_cyw43_port_get_control_tx_diag(&tx_diag);
 
     ap6256_cyw43_port_format_reset_flags(ap6256_cyw43_port_breadcrumb_reset_flags(),
                                          breadcrumb_reset_flags,
@@ -952,6 +957,33 @@ void ap6256_connectivity_print_wifi_info(void)
                      (unsigned long)ap6256_cyw43_port_last_cmd_arg(),
                      (long)ap6256_cyw43_port_last_cmd_status(),
                      (unsigned long)ap6256_cyw43_port_last_cmd_response());
+    test_uart_printf("  TX ctl: valid=%u io=%lu/%lu if=%lu len=%lu id=%lu sdpcm=%lu xfer=%lu bs=%lu crc=0x%08lX first=%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X\r\n",
+                     tx_diag.valid,
+                     (unsigned long)tx_diag.kind,
+                     (unsigned long)tx_diag.cmd,
+                     (unsigned long)tx_diag.iface,
+                     (unsigned long)tx_diag.len,
+                     (unsigned long)tx_diag.id,
+                     (unsigned long)tx_diag.sdpcm_len,
+                     (unsigned long)tx_diag.transfer_len,
+                     (unsigned long)tx_diag.block_size,
+                     (unsigned long)tx_diag.checksum,
+                     tx_diag.first64[0],
+                     tx_diag.first64[1],
+                     tx_diag.first64[2],
+                     tx_diag.first64[3],
+                     tx_diag.first64[4],
+                     tx_diag.first64[5],
+                     tx_diag.first64[6],
+                     tx_diag.first64[7],
+                     tx_diag.first64[8],
+                     tx_diag.first64[9],
+                     tx_diag.first64[10],
+                     tx_diag.first64[11],
+                     tx_diag.first64[12],
+                     tx_diag.first64[13],
+                     tx_diag.first64[14],
+                     tx_diag.first64[15]);
     test_uart_printf("  Cached session profile: %u\r\n",
                      ap6256_wifi_runtime_has_cached_profile());
     test_uart_printf("  Embedded assets ready: %u\r\n", state->assets_ready);

@@ -22,6 +22,7 @@
 #define AP6256_CYW43_IOCTL_PHASE_SEND_CREDIT    9U
 #define AP6256_CYW43_IOCTL_PHASE_SEND_CREDIT_TIMEOUT 10U
 #define AP6256_CYW43_IOCTL_PHASE_ACCEPTED_ASYNC 11U
+#define AP6256_CYW43_IOCTL_PHASE_TX_ACCEPTED    12U
 
 #define AP6256_CYW43_SCAN_WAKE_NONE            0U
 #define AP6256_CYW43_SCAN_WAKE_WAKE_CTRL_READ  1U
@@ -61,6 +62,10 @@
 #define AP6256_CYW43_BREADCRUMB_CMD53_WRITE      26U
 #define AP6256_CYW43_BREADCRUMB_CMD52            27U
 #define AP6256_CYW43_BREADCRUMB_SCAN_RETURN      28U
+#define AP6256_CYW43_BREADCRUMB_JOIN_START       29U
+#define AP6256_CYW43_BREADCRUMB_JOIN_WAIT        30U
+#define AP6256_CYW43_BREADCRUMB_JOIN_TIMEOUT     31U
+#define AP6256_CYW43_BREADCRUMB_JOIN_RESULT      32U
 #define AP6256_CYW43_BREADCRUMB_HARDFAULT      100U
 #define AP6256_CYW43_BREADCRUMB_MEMMANAGE      101U
 #define AP6256_CYW43_BREADCRUMB_BUSFAULT       102U
@@ -111,6 +116,20 @@ typedef struct {
     uint8_t send_synthetic_credit;
 } ap6256_cyw43_pre_reset_diag_t;
 
+typedef struct {
+    uint8_t valid;
+    uint32_t kind;
+    uint32_t cmd;
+    uint32_t iface;
+    uint32_t len;
+    uint32_t id;
+    uint32_t sdpcm_len;
+    uint32_t transfer_len;
+    uint32_t block_size;
+    uint32_t checksum;
+    uint8_t first64[64];
+} ap6256_cyw43_control_tx_diag_t;
+
 void ap6256_cyw43_port_init(void);
 void ap6256_cyw43_port_deinit(void);
 void ap6256_cyw43_port_poll(void);
@@ -153,6 +172,7 @@ uint16_t ap6256_cyw43_port_last_cmd53_frame_size(void);
 uint32_t ap6256_cyw43_port_last_cmd53_count(void);
 uint32_t ap6256_cyw43_port_runtime_f2_block_size(void);
 void ap6256_cyw43_port_set_runtime_f2_block_size(uint32_t block_size);
+int32_t ap6256_cyw43_port_apply_runtime_f2_block_size(void);
 void ap6256_cyw43_port_record_last_cmd(uint32_t cmd, uint32_t arg, int32_t status, uint32_t response);
 uint32_t ap6256_cyw43_port_last_cmd(void);
 uint32_t ap6256_cyw43_port_last_cmd_arg(void);
@@ -321,6 +341,17 @@ void ap6256_cyw43_port_set_ioctl_attempt_flags(uint8_t recovery_attempted,
 uint8_t ap6256_cyw43_port_ioctl_recovery_attempted(void);
 uint8_t ap6256_cyw43_port_ioctl_forced_probe_attempted(void);
 uint8_t ap6256_cyw43_port_ioctl_resend_attempted(void);
+void ap6256_cyw43_port_record_control_tx_frame(uint32_t kind,
+                                               uint32_t cmd,
+                                               uint32_t iface,
+                                               uint32_t len,
+                                               uint32_t id,
+                                               uint32_t sdpcm_len,
+                                               uint32_t transfer_len,
+                                               uint32_t block_size,
+                                               const uint8_t *frame,
+                                               uint32_t frame_len);
+void ap6256_cyw43_port_get_control_tx_diag(ap6256_cyw43_control_tx_diag_t *diag);
 void ap6256_cyw43_port_get_pre_reset_diag(ap6256_cyw43_pre_reset_diag_t *diag);
 uint8_t ap6256_cyw43_port_pre_reset_diag_valid(void);
 void ap6256_cyw43_port_set_reference_nvram_enabled(uint8_t enable);
