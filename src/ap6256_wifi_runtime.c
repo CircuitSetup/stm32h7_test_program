@@ -60,6 +60,7 @@ typedef struct {
     int16_t last_rssi;
     uint8_t cached_bssid[6];
     uint16_t cached_channel;
+    uint16_t cached_chanspec;
     char cached_ssid[33];
     char cached_password[65];
     char last_ip[16];
@@ -787,6 +788,7 @@ static void ap6256_wifi_runtime_capture_profile(const ap6256_wifi_scan_entry_t *
     s_wifi_runtime.cached_secure = entry->secure;
     memcpy(s_wifi_runtime.cached_bssid, entry->bssid, sizeof(s_wifi_runtime.cached_bssid));
     s_wifi_runtime.cached_channel = entry->channel;
+    s_wifi_runtime.cached_chanspec = entry->chanspec;
     s_wifi_runtime.has_cached_profile = 1U;
 
     memset(s_wifi_runtime.cached_password, 0, sizeof(s_wifi_runtime.cached_password));
@@ -1594,6 +1596,7 @@ static ap6256_status_t ap6256_wifi_runtime_run_common(const char *ssid,
                                                       uint8_t secure,
                                                       const uint8_t *bssid,
                                                       uint16_t channel,
+                                                      uint16_t chanspec,
                                                       ap6256_wifi_runtime_summary_t *summary,
                                                       char *detail,
                                                       size_t detail_len)
@@ -1648,13 +1651,20 @@ static ap6256_status_t ap6256_wifi_runtime_run_common(const char *ssid,
              * Do this for both 2.4 GHz and 5 GHz so a multi-BSSID SSID cannot
              * drift to a different AP than the one discovered during scan.
              */
-            test_uart_printf("[ INFO ] wifi.connect stage: directed join bssid=%02X:%02X:%02X:%02X:%02X:%02X ch=%u/%s\r\n",
+            test_uart_printf("[ INFO ] wifi.connect stage: directed join bssid=%02X:%02X:%02X:%02X:%02X:%02X ch=%u/%s cs=0x%04X\r\n",
                              bssid[0], bssid[1], bssid[2],
                              bssid[3], bssid[4], bssid[5],
                              (unsigned)channel,
-                             ap6256_wifi_runtime_channel_band_name(channel));
+                             ap6256_wifi_runtime_channel_band_name(channel),
+                             chanspec);
             join_bssid = bssid;
-            join_channel = channel;
+            /*
+             * Keep the raw scan chanspec for diagnostics, but use the stable
+             * channel-based join input here. Passing the raw BCM43456 5 GHz
+             * chanspec (for example 0xE09B) through the CYW43 join iovar
+             * reproducibly resets the AP6256 during the join ioctl wait.
+             */
+            join_channel = (uint32_t)channel;
         }
 
         rc = cyw43_wifi_join(&cyw43_state,
@@ -2145,28 +2155,22 @@ scan_start_retry:
 
     selected_copy = *selected;
     selected = &selected_copy;
-    if (ap6256_wifi_runtime_channel_is_5g(selected->channel) != 0U) {
-        /*
-         * Hidden 5 GHz association depends on the firmware context from the
-         * directed scan that just found the BSSID. Keep that session alive and
-         * let the brcmfmac-style join path carry BSSID/chanspec into connect.
-         */
-        test_uart_write_str("[ INFO ] wifi.connect stage: keep directed 5GHz scan context for join\r\n");
-    } else {
-        /*
-         * BCM43456 delivers scan results through async ESCAN events, but the
-         * first normal control iovar after a visible scan can stall while
-         * firmware is unwinding scan state. Restart for the 2.4 GHz/visible path
-         * where the selected BSSID/channel is enough to rejoin deterministically.
-         */
-        test_uart_write_str("[ INFO ] wifi.connect stage: recover radio after scan before join\r\n");
-        ap6256_wifi_runtime_suspend();
-        if (!ap6256_wifi_runtime_ensure_ready(detail, detail_len)) {
-            ap6256_connectivity_set_wifi_note(detail);
-            ap6256_wifi_runtime_release_owner_with_breadcrumb(AP6256_CYW43_BREADCRUMB_RELEASE,
-                                                              AP6256_STATUS_IO_ERROR);
-            return AP6256_STATUS_IO_ERROR;
-        }
+    /*
+     * BCM43456 delivers scan results through async ESCAN events, but the first
+     * normal control iovar after a scan can stall while firmware is unwinding
+     * scan state. Restart before association for every selected BSS, including
+     * hidden 5 GHz. The selected BSSID/channel/chanspec remains cached locally,
+     * which mirrors brcmfmac's model: scan identifies the BSS, join carries the
+     * selected BSS identity without depending on live scan context.
+     */
+    test_uart_printf("[ INFO ] wifi.connect stage: recover radio after %s scan before join\r\n",
+                     (ap6256_wifi_runtime_channel_is_5g(selected->channel) != 0U) ? "5GHz" : "visible");
+    ap6256_wifi_runtime_suspend();
+    if (!ap6256_wifi_runtime_ensure_ready(detail, detail_len)) {
+        ap6256_connectivity_set_wifi_note(detail);
+        ap6256_wifi_runtime_release_owner_with_breadcrumb(AP6256_CYW43_BREADCRUMB_RELEASE,
+                                                          AP6256_STATUS_IO_ERROR);
+        return AP6256_STATUS_IO_ERROR;
     }
 
     test_uart_write_str("[ INFO ] wifi.connect stage: join start\r\n");
@@ -2177,6 +2181,7 @@ scan_start_retry:
                                                             selected->secure,
                                                             selected->bssid,
                                                             selected->channel,
+                                                            selected->chanspec,
                                                             summary,
                                                             detail,
                                                             detail_len);
@@ -2223,6 +2228,7 @@ ap6256_status_t ap6256_wifi_runtime_run_cached(ap6256_wifi_runtime_summary_t *su
                                                             s_wifi_runtime.cached_secure,
                                                             s_wifi_runtime.cached_bssid,
                                                             s_wifi_runtime.cached_channel,
+                                                            s_wifi_runtime.cached_chanspec,
                                                             summary,
                                                             detail,
                                                             detail_len);

@@ -221,6 +221,8 @@
  * \brief To indicate no specific channel when calling cyw43_ll_wifi_join with bssid specified
  */
 #define CYW43_CHANNEL_NONE (0xffffffff) ///< No Channel specified (use the AP's channel)
+#define CYW43_CHANNEL_CHANSPEC_FLAG (0x80000000u)
+#define CYW43_CHANNEL_FROM_CHANSPEC(chanspec) (CYW43_CHANNEL_CHANSPEC_FLAG | ((uint32_t)(uint16_t)(chanspec)))
 
 /*!
  * \brief Network interface types

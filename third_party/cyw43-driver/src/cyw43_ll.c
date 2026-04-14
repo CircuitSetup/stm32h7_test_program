@@ -242,6 +242,15 @@ static void cyw43_xxd(size_t len, const uint8_t *buf) {
                 (((channel) <= AP6256_CH_MAX_2G_CHANNEL) ? \
                     AP6256_CHSPEC_D11AC_BND_2G : AP6256_CHSPEC_D11AC_BND_5G)))
 
+static uint16_t ap6256_join_chanspec(uint32_t channel)
+{
+    if ((channel != CYW43_CHANNEL_NONE) &&
+        ((channel & CYW43_CHANNEL_CHANSPEC_FLAG) != 0U)) {
+        return (uint16_t)(channel & 0xffffU);
+    }
+    return AP6256_CHSPEC_20MHZ(channel);
+}
+
 #ifndef AP6256_CYW43_FORCE_SDIO_POLL
 #define AP6256_CYW43_FORCE_SDIO_POLL 0
 #endif
@@ -984,7 +993,14 @@ static void cyw43_ll_wifi_parse_scan_result(cyw43_async_event_t *ev) {
     }
 
     ev->u.scan_result.chanspec = scan_res->bss.chanspec;
-    ev->u.scan_result.channel = scan_res->bss.chanspec & 0xff;
+    /*
+     * Keep the legacy CYW43 channel field as chanspec low byte for now. The
+     * BCM43456 BSS record also exposes ctl_ch (primary channel), but feeding
+     * that primary 5 GHz channel into the current CYW43 join iovar path resets
+     * AP6256 during the join ioctl wait. Preserve raw chanspec for diagnostics
+     * while keeping the active join path on the known no-reset channel value.
+     */
+    ev->u.scan_result.channel = scan_res->bss.chanspec & 0xffU;
     ev->u.scan_result.auth_mode = security;
     ev->u.scan_result.security_flags = security_flags;
     ev->u.scan_result.group_cipher_flags = group_flags;
@@ -4308,7 +4324,7 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
         return -CYW43_EINVAL;
     }
 
-    if (0 && (auth_type == CYW43_AUTH_WPA2_AES_PSK || auth_type == CYW43_AUTH_WPA2_MIXED_PSK)) {
+    if (auth_type == CYW43_AUTH_WPA2_AES_PSK || auth_type == CYW43_AUTH_WPA2_MIXED_PSK) {
         /*
          * brcmfmac programs the RSN/WPA IE before issuing the join. BCM43456
          * accepts the scalar wsec/wpa_auth settings without error, but on AP6256
@@ -4504,7 +4520,7 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
             cyw43_put_le32(buf + 4 + 32 + 8, 320); // active_time
             cyw43_put_le32(buf + 4 + 32 + 12, 400); // passive_time
             cyw43_put_le32(buf + 4 + 32 + 20 + 8, 1); // chanspec_num
-            uint16_t chspec = AP6256_CHSPEC_20MHZ(channel);
+            uint16_t chspec = ap6256_join_chanspec(channel);
             cyw43_put_le16(buf + 4 + 32 + 20 + 12, chspec); // chanspec_list
         }
 
@@ -4524,7 +4540,7 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
             memcpy(buf + 4 + 32, bssid, 6);
             if (channel != CYW43_CHANNEL_NONE) {
                 cyw43_put_le32(buf + 4 + 32 + 8, 1); // chanspec_num
-                uint16_t chspec = AP6256_CHSPEC_20MHZ(channel);
+                uint16_t chspec = ap6256_join_chanspec(channel);
                 cyw43_put_le16(buf + 4 + 32 + 12, chspec);
                 /*
                  * brcmfmac sends sizeof(brcmf_join_params) once a chanspec
