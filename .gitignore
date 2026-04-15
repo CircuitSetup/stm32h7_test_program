@@ -4,3 +4,4 @@
 /src/generated/
 scripts/hil_rtt_command.py
 scripts/test_ap6256_join_payload.py
+/scripts/__pycache__

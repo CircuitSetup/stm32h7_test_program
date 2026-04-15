@@ -468,7 +468,7 @@ static void app_print_wifi_breadcrumb(void)
                      (unsigned long)ap6256_cyw43_port_boot_reset_flags(),
                      breadcrumb_reset_flags,
                      (unsigned long)ap6256_cyw43_port_breadcrumb_reset_flags());
-    test_uart_printf("Pre-reset Wi-Fi diag: valid=%u bc=%s/%lu io_cur=%lu/%lu id=%lu st=%ld poll=%ld io_done=%lu/%lu id=%lu st=%ld poll=%ld pend=%u/%u c52=%lu/0x%08lX c53=%c/f%u/b%u/bs%lu/l%lu/st%ld/fr%u\r\n",
+    test_uart_printf("Pre-reset Wi-Fi diag: valid=%u bc=%s/%lu io_cur=%lu/%lu id=%lu st=%ld poll=%ld assoc=%u/%02X:%02X:%02X:%02X:%02X:%02X/ch%u/%s/cs%04X/auth%02X cand=%u/%u pend=%u/%u c52=%lu/0x%08lX c53=%c/f%u/b%u/bs%lu/l%lu/st%ld/fr%u rx=%u/ch%u ev=%u/%u/%u\r\n",
                      pre_reset.valid,
                      ap6256_cyw43_port_breadcrumb_name(pre_reset.breadcrumb_stage),
                      (unsigned long)pre_reset.breadcrumb_stage,
@@ -477,11 +477,19 @@ static void app_print_wifi_breadcrumb(void)
                      (unsigned long)pre_reset.ioctl_id,
                      (long)pre_reset.ioctl_status,
                      (long)pre_reset.ioctl_poll,
-                     (unsigned long)pre_reset.completed_ioctl_kind,
-                     (unsigned long)pre_reset.completed_ioctl_cmd,
-                     (unsigned long)pre_reset.completed_ioctl_id,
-                     (long)pre_reset.completed_ioctl_status,
-                     (long)pre_reset.completed_ioctl_poll,
+                     pre_reset.assoc_target_valid,
+                     pre_reset.assoc_target_bssid[0],
+                     pre_reset.assoc_target_bssid[1],
+                     pre_reset.assoc_target_bssid[2],
+                     pre_reset.assoc_target_bssid[3],
+                     pre_reset.assoc_target_bssid[4],
+                     pre_reset.assoc_target_bssid[5],
+                     pre_reset.assoc_target_channel,
+                     (pre_reset.assoc_target_5g != 0U) ? "5G" : "2G",
+                     pre_reset.assoc_target_chanspec,
+                     pre_reset.assoc_target_auth_code,
+                     pre_reset.assoc_candidate_index,
+                     pre_reset.assoc_candidate_count,
                      pre_reset.packet_pending,
                      pre_reset.packet_pending_source,
                      (unsigned long)pre_reset.last_cmd,
@@ -492,7 +500,12 @@ static void app_print_wifi_breadcrumb(void)
                      (unsigned long)pre_reset.cmd53_block_size,
                      (unsigned long)pre_reset.cmd53_length,
                      (long)pre_reset.cmd53_status,
-                     pre_reset.cmd53_frame_size);
+                     pre_reset.cmd53_frame_size,
+                     pre_reset.rx_class,
+                     pre_reset.rx_channel,
+                     pre_reset.async_event_type,
+                     pre_reset.async_event_status,
+                     pre_reset.async_event_reason);
 }
 
 static uint32_t app_hash_string(const char *text)

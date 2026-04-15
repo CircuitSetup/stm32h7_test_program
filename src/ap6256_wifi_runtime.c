@@ -6,6 +6,7 @@
 #include "ap6256_assets.h"
 #include "cyw43.h"
 #include "cyw43_country.h"
+#include "cyw43_ll.h"
 #include "network_manager.h"
 #include "test_uart.h"
 
@@ -22,10 +23,16 @@
 #define AP6256_WIFI_MAX_SCAN_RESULTS      32U
 #define AP6256_WIFI_JOIN_TIMEOUT_MS       20000U
 #define AP6256_WIFI_SCAN_QUIET_COMPLETE_MS 3000U
+#define AP6256_WIFI_SCAN_QUIET_STABLE_MS 1500U
 #define AP6256_WIFI_SCAN_NO_PROGRESS_TIMEOUT_MS 10000U
 #define AP6256_WIFI_SCAN_FORCE_5G         (-5)
 #define AP6256_WIFI_CHANNEL_5G_UNKNOWN    0xFFFFU
 #define AP6256_WIFI_SCAN_RECOVERY_F2_BLOCK_SIZE 64U
+#define AP6256_WIFI_JOIN_F2_BLOCK_SIZE     64U
+#define AP6256_WIFI_DIRECTED_5G_SCAN_TIMEOUT_MS 15000U
+#define AP6256_WIFI_PROFILE_BROAD_SCAN_TIMEOUT_MS 8000U
+#define AP6256_WIFI_5G_JOIN_NO_PROGRESS_MS 10000U
+#define AP6256_WIFI_MAX_JOIN_CANDIDATES   AP6256_WIFI_MAX_SCAN_RESULTS
 #define AP6256_CYW43_IOCTL_SET_BAND       ((142U << 1U) | 1U)
 #define AP6256_CYW43_IOCTL_SET_CHANNEL    ((30U << 1U) | 1U)
 #define AP6256_CYW43_JOIN_STATE_KEYED     0x0800U
@@ -84,13 +91,21 @@ typedef struct {
 } ap6256_wifi_runtime_state_t;
 
 static ap6256_wifi_runtime_state_t s_wifi_runtime;
+static ap6256_wifi_scan_entry_t s_wifi_runtime_join_candidates[AP6256_WIFI_MAX_JOIN_CANDIDATES];
 static uint8_t s_wifi_runtime_selection_was_index;
+static uint8_t s_wifi_runtime_join_candidate_index;
+static uint8_t s_wifi_runtime_join_candidate_count;
 
 static const char *ap6256_wifi_runtime_packet_source_name(uint32_t source);
+static const char *ap6256_wifi_runtime_rx_class_name(uint32_t rx_class);
 static int ap6256_wifi_runtime_probe_associated_bssid(uint8_t bssid_out[6]);
 static int ap6256_wifi_runtime_set_ioctl_u32(uint32_t cmd, uint32_t value) __attribute__((unused));
+static bool ap6256_wifi_runtime_wait_for_scan_complete_ex(uint32_t timeout_ms,
+                                                          uint8_t accept_partial_on_timeout);
 static bool ap6256_wifi_runtime_wait_for_scan_complete(uint32_t timeout_ms);
 static void ap6256_wifi_runtime_reset_driver_state(void);
+static void ap6256_wifi_runtime_sort_join_candidates(ap6256_wifi_scan_entry_t *candidates,
+                                                     uint32_t candidate_count);
 
 static const uint32_t s_wifi_runtime_profiles[] = {
     AP6256_CYW43_PROFILE_BASELINE,
@@ -284,6 +299,17 @@ static const char *ap6256_wifi_runtime_channel_band_name(uint16_t channel)
     return (ap6256_wifi_runtime_channel_is_5g(channel) != 0U) ? "5GHz" : "2.4GHz";
 }
 
+static uint16_t ap6256_wifi_runtime_primary_chanspec(uint16_t channel)
+{
+    if (channel == 0U || channel == AP6256_WIFI_CHANNEL_5G_UNKNOWN) {
+        return 0U;
+    }
+
+    return (uint16_t)(channel |
+                      0x1000U |
+                      ((ap6256_wifi_runtime_channel_is_5g(channel) != 0U) ? 0xC000U : 0U));
+}
+
 static int ap6256_wifi_runtime_bssid_matches(const uint8_t lhs[6], const uint8_t rhs[6])
 {
     return (memcmp(lhs, rhs, 6U) == 0) ? 1 : 0;
@@ -473,6 +499,140 @@ static ap6256_wifi_scan_entry_t *ap6256_wifi_runtime_find_best_ssid_channel(cons
     return best;
 }
 
+static uint32_t ap6256_wifi_runtime_collect_ssid_5g_candidates(const char *ssid,
+                                                               uint16_t preferred_channel,
+                                                               ap6256_wifi_scan_entry_t *candidates,
+                                                               uint32_t max_candidates,
+                                                               uint32_t *unsupported_count)
+{
+    uint32_t count = 0U;
+
+    if (unsupported_count != NULL) {
+        *unsupported_count = 0U;
+    }
+    if ((ssid == NULL) || (candidates == NULL) || (max_candidates == 0U)) {
+        return 0U;
+    }
+
+    /*
+     * s_wifi_runtime.scan is sorted by RSSI before this helper is called. Copy
+     * candidates in that order so the join loop tries the strongest legal 5 GHz
+     * BSS first, matching the cfg80211/brcmfmac selection model.
+     */
+    for (uint32_t i = 0U; i < AP6256_WIFI_MAX_SCAN_RESULTS; ++i) {
+        char unsupported_reason[64];
+        const ap6256_wifi_scan_entry_t *entry = &s_wifi_runtime.scan[i];
+
+        if ((entry->valid == 0U) ||
+            (strcmp(entry->ssid, ssid) != 0) ||
+            (ap6256_wifi_runtime_channel_is_5g(entry->channel) == 0U)) {
+            continue;
+        }
+        if ((preferred_channel != 0U) && (entry->channel != preferred_channel)) {
+            continue;
+        }
+
+        unsupported_reason[0] = '\0';
+        if (ap6256_wifi_runtime_scan_security_supported(entry,
+                                                        unsupported_reason,
+                                                        sizeof(unsupported_reason)) == 0U) {
+            if (unsupported_count != NULL) {
+                (*unsupported_count)++;
+            }
+            test_uart_printf("[ INFO ] wifi.connect stage: skip unsupported 5GHz BSS ssid=%s ch=%u bssid=%02X:%02X:%02X:%02X:%02X:%02X reason=%s\r\n",
+                             entry->ssid,
+                             entry->channel,
+                             entry->bssid[0],
+                             entry->bssid[1],
+                             entry->bssid[2],
+                             entry->bssid[3],
+                             entry->bssid[4],
+                             entry->bssid[5],
+                             unsupported_reason);
+            continue;
+        }
+
+        candidates[count++] = *entry;
+        if (count >= max_candidates) {
+            break;
+        }
+    }
+
+    ap6256_wifi_runtime_sort_join_candidates(candidates, count);
+    return count;
+}
+
+static void ap6256_wifi_runtime_sort_join_candidates(ap6256_wifi_scan_entry_t *candidates,
+                                                     uint32_t candidate_count)
+{
+    if (candidates == NULL) {
+        return;
+    }
+
+    for (uint32_t i = 0U; i < candidate_count; ++i) {
+        for (uint32_t j = i + 1U; j < candidate_count; ++j) {
+            uint8_t swap = 0U;
+            int16_t score_i = candidates[i].rssi;
+            int16_t score_j = candidates[j].rssi;
+
+            /*
+             * Strong UNII-3 doorbelkin BSSIDs have repeatedly reset the board
+             * during first association. Keep all channels eligible, but try
+             * lower 5 GHz channels first when multiple candidates exist so a
+             * single reset-prone AP radio does not prevent proving the driver
+             * on another visible 5 GHz BSSID.
+             */
+            if (candidates[i].channel >= 149U) {
+                score_i = (int16_t)(score_i - 32);
+            }
+            if (candidates[j].channel >= 149U) {
+                score_j = (int16_t)(score_j - 32);
+            }
+
+            if (score_j > score_i) {
+                swap = 1U;
+            }
+
+            if (swap != 0U) {
+                ap6256_wifi_scan_entry_t tmp = candidates[i];
+                candidates[i] = candidates[j];
+                candidates[j] = tmp;
+            }
+        }
+    }
+}
+
+static void ap6256_wifi_runtime_print_join_candidates(const char *ssid,
+                                                      const ap6256_wifi_scan_entry_t *candidates,
+                                                      uint32_t candidate_count)
+{
+    test_uart_printf("[ INFO ] wifi.connect stage: 5GHz candidates ssid=%s count=%lu\r\n",
+                     (ssid != NULL) ? ssid : "n/a",
+                     (unsigned long)candidate_count);
+    for (uint32_t i = 0U; i < candidate_count; ++i) {
+        const ap6256_wifi_scan_entry_t *entry = &candidates[i];
+
+        test_uart_printf("[ INFO ] wifi.connect stage: candidate %lu/%lu bssid=%02X:%02X:%02X:%02X:%02X:%02X ch=%u/%s rssi=%d sec=%s akm=%s pair=%s grp=%s mfp=%s cs=0x%04X\r\n",
+                         (unsigned long)(i + 1U),
+                         (unsigned long)candidate_count,
+                         entry->bssid[0],
+                         entry->bssid[1],
+                         entry->bssid[2],
+                         entry->bssid[3],
+                         entry->bssid[4],
+                         entry->bssid[5],
+                         entry->channel,
+                         ap6256_wifi_runtime_channel_band_name(entry->channel),
+                         (int)entry->rssi,
+                         ap6256_wifi_runtime_security_name(entry->auth_mode),
+                         ap6256_wifi_runtime_akm_name(entry->akm_flags),
+                         ap6256_wifi_runtime_cipher_name(entry->pairwise_cipher_flags),
+                         ap6256_wifi_runtime_cipher_name(entry->group_cipher_flags),
+                         ap6256_wifi_runtime_mfp_name(entry->mfp),
+                         entry->chanspec);
+    }
+}
+
 static void ap6256_wifi_runtime_sort_scan_results(void)
 {
     uint32_t i;
@@ -502,7 +662,7 @@ static void ap6256_wifi_runtime_sort_scan_results(void)
     }
 }
 
-static int ap6256_wifi_runtime_add_manual_hidden_network(const char *ssid)
+static int ap6256_wifi_runtime_add_manual_directed_5g_network(const char *ssid)
 {
     size_t ssid_len;
     uint32_t insert_index = AP6256_WIFI_MAX_SCAN_RESULTS;
@@ -547,7 +707,7 @@ static int ap6256_wifi_runtime_add_manual_hidden_network(const char *ssid)
     s_wifi_runtime.scan[insert_index].rssi = -127;
 
     s_wifi_runtime.last_scan_count = ap6256_wifi_runtime_count_scan_results();
-    test_uart_printf("[ INFO ] wifi.connect stage: manual hidden 5GHz SSID '%s'\r\n", ssid);
+    test_uart_printf("[ INFO ] wifi.connect stage: manual directed 5GHz SSID '%s'\r\n", ssid);
     return (int)insert_index;
 }
 
@@ -590,7 +750,7 @@ static int ap6256_wifi_runtime_prompt_network_selection(void)
     uint32_t i;
     int line_len;
 
-    test_uart_write_str("Select Wi-Fi network number or SSID (hidden 5GHz SSID allowed): ");
+    test_uart_write_str("Select Wi-Fi network number or SSID (directed 5GHz SSID allowed): ");
     line_len = test_uart_read_line(line, sizeof(line), AP6256_WIFI_PROMPT_TIMEOUT_MS);
     if (line_len <= 0) {
         return -1;
@@ -611,12 +771,12 @@ static int ap6256_wifi_runtime_prompt_network_selection(void)
         }
     }
 
-    return ap6256_wifi_runtime_add_manual_hidden_network(line);
+    return ap6256_wifi_runtime_add_manual_directed_5g_network(line);
 }
 
-static ap6256_wifi_scan_entry_t *ap6256_wifi_runtime_resolve_hidden_5g_selection(const char *ssid,
-                                                                                 char *detail,
-                                                                                 size_t detail_len)
+static ap6256_wifi_scan_entry_t *ap6256_wifi_runtime_resolve_directed_5g_selection(const char *ssid,
+                                                                                   char *detail,
+                                                                                   size_t detail_len)
 {
     cyw43_wifi_scan_options_t opts;
     ap6256_wifi_scan_entry_t *resolved;
@@ -626,7 +786,7 @@ static ap6256_wifi_scan_entry_t *ap6256_wifi_runtime_resolve_hidden_5g_selection
         return NULL;
     }
 
-    test_uart_printf("[ INFO ] wifi.connect stage: directed hidden 5GHz scan ssid=%s\r\n", ssid);
+    test_uart_printf("[ INFO ] wifi.connect stage: directed 5GHz SSID scan ssid=%s\r\n", ssid);
 
     ap6256_wifi_runtime_clear_scan_results();
     memset(&opts, 0, sizeof(opts));
@@ -634,7 +794,7 @@ static ap6256_wifi_scan_entry_t *ap6256_wifi_runtime_resolve_hidden_5g_selection
     opts.channel_num = AP6256_WIFI_SCAN_FORCE_5G;
     opts.ssid_len = (uint32_t)strnlen(ssid, sizeof(opts.ssid));
     if ((opts.ssid_len == 0U) || (opts.ssid_len > sizeof(opts.ssid))) {
-        (void)snprintf(detail, detail_len, "Invalid hidden 5GHz SSID '%s'.", ssid);
+        (void)snprintf(detail, detail_len, "Invalid directed 5GHz SSID '%s'.", ssid);
         return NULL;
     }
     memcpy(opts.ssid, ssid, opts.ssid_len);
@@ -646,19 +806,19 @@ static ap6256_wifi_scan_entry_t *ap6256_wifi_runtime_resolve_hidden_5g_selection
         cyw43_state.wifi_scan_env = NULL;
         (void)snprintf(detail,
                        detail_len,
-                       "Directed 5GHz scan for hidden SSID '%s' failed to start (rc=%d).",
+                       "Directed 5GHz scan for SSID '%s' failed to start (rc=%d).",
                        ssid,
                        rc);
         return NULL;
     }
 
-    if (!ap6256_wifi_runtime_wait_for_scan_complete(AP6256_WIFI_SCAN_TIMEOUT_MS)) {
+    if (!ap6256_wifi_runtime_wait_for_scan_complete_ex(AP6256_WIFI_DIRECTED_5G_SCAN_TIMEOUT_MS, 0U)) {
         cyw43_state.wifi_scan_state = 0;
         cyw43_state.wifi_scan_cb = NULL;
         cyw43_state.wifi_scan_env = NULL;
         (void)snprintf(detail,
                        detail_len,
-                       "Hidden 5GHz SSID '%s' did not respond during directed scan.",
+                       "5GHz SSID '%s' did not respond during directed scan.",
                        ssid);
         return NULL;
     }
@@ -671,12 +831,12 @@ static ap6256_wifi_scan_entry_t *ap6256_wifi_runtime_resolve_hidden_5g_selection
     if (resolved == NULL) {
         (void)snprintf(detail,
                        detail_len,
-                       "Hidden 5GHz SSID '%s' was not found; join was not attempted.",
+                       "5GHz SSID '%s' was not found by directed scan; join was not attempted.",
                        ssid);
         return NULL;
     }
 
-    test_uart_printf("[ INFO ] wifi.connect stage: hidden 5GHz resolved bssid=%02X:%02X:%02X:%02X:%02X:%02X ch=%u rssi=%d sec=%s akm=%s pair=%s grp=%s mfp=%s cs=0x%04X\r\n",
+    test_uart_printf("[ INFO ] wifi.connect stage: directed 5GHz resolved bssid=%02X:%02X:%02X:%02X:%02X:%02X ch=%u rssi=%d sec=%s akm=%s pair=%s grp=%s mfp=%s cs=0x%04X\r\n",
                      resolved->bssid[0],
                      resolved->bssid[1],
                      resolved->bssid[2],
@@ -731,9 +891,9 @@ static ap6256_wifi_scan_entry_t *ap6256_wifi_runtime_prefer_5g_selection(ap6256_
      * Our interactive console often starts from a human SSID string, so do one
      * bounded directed 5 GHz scan before accepting a 2.4 GHz fallback.
      */
-    directed_5g = ap6256_wifi_runtime_resolve_hidden_5g_selection(fallback->ssid,
-                                                                  detail,
-                                                                  detail_len);
+    directed_5g = ap6256_wifi_runtime_resolve_directed_5g_selection(fallback->ssid,
+                                                                    detail,
+                                                                    detail_len);
     if (directed_5g != NULL) {
         if (fixture_classification != NULL) {
             *fixture_classification = "directed_5g_bss";
@@ -750,7 +910,8 @@ static ap6256_wifi_scan_entry_t *ap6256_wifi_runtime_prefer_5g_selection(ap6256_
     return fallback;
 }
 
-static bool ap6256_wifi_runtime_wait_for_scan_complete(uint32_t timeout_ms)
+static bool ap6256_wifi_runtime_wait_for_scan_complete_ex(uint32_t timeout_ms,
+                                                          uint8_t accept_partial_on_timeout)
 {
     uint32_t start_ms = HAL_GetTick();
     uint32_t last_diag_ms = start_ms;
@@ -768,7 +929,8 @@ static bool ap6256_wifi_runtime_wait_for_scan_complete(uint32_t timeout_ms)
         }
 
         if ((now_ms - start_ms) >= timeout_ms) {
-            if (ap6256_wifi_runtime_count_scan_results() > 0U) {
+            if ((accept_partial_on_timeout != 0U) &&
+                (ap6256_wifi_runtime_count_scan_results() > 0U)) {
                 cyw43_state.wifi_scan_state = 2;
                 return true;
             }
@@ -793,12 +955,67 @@ static bool ap6256_wifi_runtime_wait_for_scan_complete(uint32_t timeout_ms)
     return true;
 }
 
-static bool ap6256_wifi_runtime_wait_for_link(uint32_t timeout_ms, int *final_status)
+static bool ap6256_wifi_runtime_wait_for_scan_complete(uint32_t timeout_ms)
+{
+    return ap6256_wifi_runtime_wait_for_scan_complete_ex(timeout_ms, 1U);
+}
+
+static void ap6256_wifi_runtime_poll_burst(uint32_t polls, uint32_t delay_every)
+{
+    for (uint32_t i = 0; i < polls; ++i) {
+        ap6256_cyw43_port_poll();
+        /*
+         * Association and DHCP are event/data driven. A short yield keeps the
+         * tcpip_thread and SDIO ISR-side bookkeeping moving without adding a
+         * long blind sleep between F2 drains.
+         */
+        if ((delay_every != 0U) && (((i + 1U) % delay_every) == 0U)) {
+            osDelay(1U);
+        }
+    }
+}
+
+static void ap6256_wifi_runtime_quiesce_scan_events(const char *reason)
+{
+    uint32_t start_ms = HAL_GetTick();
+    uint32_t quiet_start_ms = start_ms;
+    uint32_t last_event_count = ap6256_cyw43_port_async_event_count();
+
+    test_uart_printf("[ INFO ] wifi.connect stage: scan event quiesce %s\r\n",
+                     (reason != NULL) ? reason : "before join");
+    while ((HAL_GetTick() - start_ms) < AP6256_WIFI_SCAN_QUIET_COMPLETE_MS) {
+        uint32_t event_count;
+
+        ap6256_cyw43_port_poll();
+        event_count = ap6256_cyw43_port_async_event_count();
+        if (event_count != last_event_count) {
+            last_event_count = event_count;
+            quiet_start_ms = HAL_GetTick();
+        } else if ((HAL_GetTick() - quiet_start_ms) >= AP6256_WIFI_SCAN_QUIET_STABLE_MS) {
+            break;
+        }
+        osDelay(20U);
+    }
+}
+
+static bool ap6256_wifi_runtime_wait_for_link(uint32_t timeout_ms,
+                                              int *final_status,
+                                              const uint8_t *target_bssid,
+                                              uint8_t secure,
+                                              uint8_t selected_5g)
 {
     uint32_t start_ms = HAL_GetTick();
     uint32_t last_diag_ms = start_ms;
-    uint8_t assoc_probe_done = 0U;
     uint8_t dhcp_restart_done = 0U;
+    uint8_t assoc_forced_link = 0U;
+    uint8_t last_assoc_seen = 0U;
+    uint8_t last_assoc_matches = 0U;
+    uint8_t last_assoc_bssid[6];
+    uint32_t last_assoc_probe_ms = 0U;
+    uint32_t start_event_count = ap6256_cyw43_port_async_event_count();
+
+    memset(last_assoc_bssid, 0, sizeof(last_assoc_bssid));
+    ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_JOIN_WAIT, 0);
 
     if (final_status != NULL) {
         *final_status = CYW43_LINK_DOWN;
@@ -808,7 +1025,7 @@ static bool ap6256_wifi_runtime_wait_for_link(uint32_t timeout_ms, int *final_st
         uint32_t now_ms;
         int status;
 
-        ap6256_cyw43_port_poll();
+        ap6256_wifi_runtime_poll_burst(4U, 2U);
 
         now_ms = HAL_GetTick();
         status = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
@@ -817,8 +1034,77 @@ static bool ap6256_wifi_runtime_wait_for_link(uint32_t timeout_ms, int *final_st
             *final_status = status;
         }
 
+        ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_JOIN_WAIT, status);
+
         if (status == CYW43_LINK_UP) {
+            ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_JOIN_RESULT, status);
             return true;
+        }
+
+        /*
+         * brcmfmac advances connection completion from firmware evidence
+         * rather than requiring one exact event order. BCM43456/AP6256 5 GHz
+         * joins can confirm association via GET_BSSID and F2 traffic while the
+         * CYW43 43439 state machine remains at LINK_JOIN. Once the selected
+         * BSSID is confirmed, bring the lwIP link up so DHCP/EAPOL/data can
+         * flow; auth failures still win via PSK/AUTH/DEAUTH events below.
+         */
+        uint8_t post_join_event_seen =
+            (ap6256_cyw43_port_async_event_count() != start_event_count) ? 1U : 0U;
+        uint8_t post_join_link_evidence =
+            ((cyw43_state.wifi_join_state &
+              (AP6256_CYW43_JOIN_STATE_LINK | AP6256_CYW43_JOIN_STATE_KEYED)) != 0U) ? 1U : 0U;
+
+        if (((cyw43_state.wifi_join_state & AP6256_CYW43_JOIN_STATE_PROGRESS) != 0U) &&
+            ((selected_5g == 0U) ||
+             (post_join_event_seen != 0U) ||
+             (post_join_link_evidence != 0U)) &&
+            ((now_ms - start_ms) >= 100U) &&
+            ((now_ms - last_assoc_probe_ms) >= 250U)) {
+            uint8_t assoc_bssid[6];
+            int assoc_seen;
+
+            last_assoc_probe_ms = now_ms;
+            memset(assoc_bssid, 0, sizeof(assoc_bssid));
+            assoc_seen = ap6256_wifi_runtime_probe_associated_bssid(assoc_bssid);
+            last_assoc_seen = (assoc_seen != 0) ? 1U : 0U;
+            if (last_assoc_seen != 0U) {
+                memcpy(last_assoc_bssid, assoc_bssid, sizeof(last_assoc_bssid));
+                last_assoc_matches =
+                    ((target_bssid == NULL) ||
+                     (ap6256_wifi_runtime_bssid_matches(assoc_bssid, target_bssid) != 0)) ? 1U : 0U;
+            } else {
+                last_assoc_matches = 0U;
+            }
+
+            if ((last_assoc_matches != 0U) &&
+                (assoc_forced_link == 0U) &&
+                ((secure == 0U) ||
+                 ((cyw43_state.wifi_join_state & AP6256_CYW43_JOIN_STATE_KEYED) != 0U)) &&
+                (status == CYW43_LINK_JOIN)) {
+                struct netif *sta_netif = &cyw43_state.netif[CYW43_ITF_STA];
+
+                assoc_forced_link = 1U;
+                dhcp_restart_done = 1U;
+                test_uart_printf("[ INFO ] wifi.connect stage: association confirmed by BSSID; start DHCP bssid=%02X:%02X:%02X:%02X:%02X:%02X join=0x%08lX rx=%s/%u\r\n",
+                                 assoc_bssid[0],
+                                 assoc_bssid[1],
+                                 assoc_bssid[2],
+                                 assoc_bssid[3],
+                                 assoc_bssid[4],
+                                 assoc_bssid[5],
+                                 (unsigned long)cyw43_state.wifi_join_state,
+                                 ap6256_wifi_runtime_rx_class_name(ap6256_cyw43_port_last_rx_class()),
+                                 ap6256_cyw43_port_last_rx_payload_len());
+                cyw43_cb_tcpip_set_link_up(&cyw43_state, CYW43_ITF_STA);
+                (void)netifapi_dhcp_release_and_stop(sta_netif);
+                (void)netifapi_dhcp_start(sta_netif);
+                ap6256_wifi_runtime_poll_burst(24U, 4U);
+                status = CYW43_LINK_NOIP;
+                if (final_status != NULL) {
+                    *final_status = status;
+                }
+            }
         }
 
         if ((status == CYW43_LINK_NOIP) && (dhcp_restart_done == 0U)) {
@@ -828,56 +1114,67 @@ static bool ap6256_wifi_runtime_wait_for_link(uint32_t timeout_ms, int *final_st
             test_uart_write_str("[ INFO ] wifi.connect stage: restart DHCP after Wi-Fi link\r\n");
             (void)netifapi_dhcp_release_and_stop(sta_netif);
             (void)netifapi_dhcp_start(sta_netif);
+            ap6256_wifi_runtime_poll_burst(24U, 4U);
+        } else if (status == CYW43_LINK_NOIP) {
+            ap6256_wifi_runtime_poll_burst(8U, 4U);
         }
 
         if ((status == CYW43_LINK_FAIL) ||
             (status == CYW43_LINK_NONET) ||
             (status == CYW43_LINK_BADAUTH)) {
+            ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_JOIN_RESULT, status);
             return false;
         }
 
-        if ((now_ms - last_diag_ms) >= 2000U) {
-            uint8_t assoc_bssid[6];
-            int assoc_seen = 0;
-
-            memset(assoc_bssid, 0, sizeof(assoc_bssid));
-            /*
-             * GET_BSSID is a useful AP6256 fallback when firmware associates
-             * without producing the exact CYW43 event sequence, but probing too
-             * early can return a firmware "not associated" status while the
-             * join is still in progress. Keep it delayed and one-shot so slow
-             * or rejected APs fail cleanly instead of destabilising the run.
-             */
-            if (((now_ms - start_ms) >= 4000U) && (assoc_probe_done == 0U)) {
-                assoc_probe_done = 1U;
-                assoc_seen = ap6256_wifi_runtime_probe_associated_bssid(assoc_bssid);
-                if ((assoc_seen != 0) &&
-                    ((cyw43_state.wifi_join_state & AP6256_CYW43_JOIN_STATE_KEYED) != 0U)) {
-                    cyw43_cb_tcpip_set_link_up(&cyw43_state, CYW43_ITF_STA);
-                }
+        if ((selected_5g != 0U) &&
+            (post_join_event_seen == 0U) &&
+            (last_assoc_seen == 0U) &&
+            ((now_ms - start_ms) >= AP6256_WIFI_5G_JOIN_NO_PROGRESS_MS)) {
+            if (final_status != NULL) {
+                *final_status = CYW43_LINK_NONET;
             }
-            last_diag_ms = now_ms;
-            test_uart_printf("[ INFO ] wifi.connect stage: join wait %lums status=%d join=0x%08lX assoc=%d %02X:%02X:%02X:%02X:%02X:%02X ev=%lu/%lu/%lu r=%lu f=0x%lX\r\n",
+            test_uart_printf("[ INFO ] wifi.connect stage: 5GHz join no progress %lums status=%d join=0x%08lX ev=%lu/%lu/%lu rx=%s/%u; try next candidate\r\n",
                              (unsigned long)(now_ms - start_ms),
                              status,
                              (unsigned long)cyw43_state.wifi_join_state,
-                             assoc_seen,
-                             assoc_bssid[0],
-                             assoc_bssid[1],
-                             assoc_bssid[2],
-                             assoc_bssid[3],
-                             assoc_bssid[4],
-                             assoc_bssid[5],
+                             (unsigned long)ap6256_cyw43_port_async_event_count(),
+                             (unsigned long)ap6256_cyw43_port_last_async_event_type(),
+                             (unsigned long)ap6256_cyw43_port_last_async_event_status(),
+                             ap6256_wifi_runtime_rx_class_name(ap6256_cyw43_port_last_rx_class()),
+                             ap6256_cyw43_port_last_rx_payload_len());
+            ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_JOIN_TIMEOUT,
+                                                (int32_t)(HAL_GetTick() - start_ms));
+            return false;
+        }
+
+        if ((now_ms - last_diag_ms) >= 500U) {
+            last_diag_ms = now_ms;
+            test_uart_printf("[ INFO ] wifi.connect stage: join wait %lums status=%d join=0x%08lX assoc=%u/m%u %02X:%02X:%02X:%02X:%02X:%02X ev=%lu/%lu/%lu r=%lu f=0x%lX rx=%s/%u\r\n",
+                             (unsigned long)(now_ms - start_ms),
+                             status,
+                             (unsigned long)cyw43_state.wifi_join_state,
+                             last_assoc_seen,
+                             last_assoc_matches,
+                             last_assoc_bssid[0],
+                             last_assoc_bssid[1],
+                             last_assoc_bssid[2],
+                             last_assoc_bssid[3],
+                             last_assoc_bssid[4],
+                             last_assoc_bssid[5],
                              (unsigned long)ap6256_cyw43_port_async_event_count(),
                              (unsigned long)ap6256_cyw43_port_last_async_event_type(),
                              (unsigned long)ap6256_cyw43_port_last_async_event_status(),
                              (unsigned long)ap6256_cyw43_port_last_async_event_reason(),
-                             (unsigned long)ap6256_cyw43_port_last_async_event_flags());
+                             (unsigned long)ap6256_cyw43_port_last_async_event_flags(),
+                             ap6256_wifi_runtime_rx_class_name(ap6256_cyw43_port_last_rx_class()),
+                             ap6256_cyw43_port_last_rx_payload_len());
         }
 
         osDelay(50U);
     }
 
+    ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_JOIN_TIMEOUT,
+                                        (int32_t)(HAL_GetTick() - start_ms));
     return false;
 }
 
@@ -1171,6 +1468,28 @@ static const char *ap6256_wifi_runtime_packet_source_name(uint32_t source)
     }
 }
 
+static const char *ap6256_wifi_runtime_rx_class_name(uint32_t rx_class)
+{
+    switch (rx_class) {
+    case AP6256_CYW43_RX_CLASS_NONE:
+        return "none";
+    case AP6256_CYW43_RX_CLASS_CONTROL:
+        return "control";
+    case AP6256_CYW43_RX_CLASS_ASYNC:
+        return "async";
+    case AP6256_CYW43_RX_CLASS_DATA:
+        return "data";
+    case AP6256_CYW43_RX_CLASS_MALFORMED:
+        return "malformed";
+    case AP6256_CYW43_RX_CLASS_RUNT:
+        return "runt";
+    case AP6256_CYW43_RX_CLASS_UNSUPPORTED:
+        return "unsupported";
+    default:
+        return "unknown";
+    }
+}
+
 static const char *ap6256_wifi_runtime_ioctl_phase_name(uint32_t phase)
 {
     switch (phase) {
@@ -1449,18 +1768,27 @@ static bool ap6256_wifi_runtime_recover_radio_before_join(const char *reason,
                                                           char *detail,
                                                           size_t detail_len)
 {
-    test_uart_printf("[ INFO ] wifi.connect stage: recover radio %s before join\r\n",
+    test_uart_printf("[ INFO ] wifi.connect stage: clear scan state %s before join\r\n",
                      (reason != NULL) ? reason : "after scan");
 
-    if (s_wifi_runtime.initialized != 0U) {
-        cyw43_deinit(&cyw43_state);
-        ap6256_cyw43_port_deinit();
-        ap6256_wifi_runtime_reset_driver_state();
-        s_wifi_runtime.initialized = 0U;
-        s_wifi_runtime.link_up = 0U;
+    if (s_wifi_runtime.initialized == 0U) {
+        return ap6256_wifi_runtime_ensure_ready(detail, detail_len);
     }
 
-    return ap6256_wifi_runtime_ensure_ready(detail, detail_len);
+    /*
+     * Keep the firmware alive between scan and association. Full CYW43
+     * deinit/reinit after a successful directed 5 GHz scan can wedge the next
+     * PM ioctl, while brcmfmac keeps the dongle up and aborts outstanding scan
+     * work immediately before association. The low-level join path issues that
+     * best-effort escan abort; here we only detach host scan callbacks/state and
+     * drain any already-pending async frames.
+     */
+    cyw43_state.wifi_scan_state = 0;
+    cyw43_state.wifi_scan_cb = NULL;
+    cyw43_state.wifi_scan_env = NULL;
+    ap6256_wifi_runtime_poll_burst(24U, 6U);
+    ap6256_wifi_runtime_quiesce_scan_events(reason);
+    return true;
 }
 
 static void ap6256_wifi_runtime_disconnect_current(void)
@@ -1469,9 +1797,10 @@ static void ap6256_wifi_runtime_disconnect_current(void)
         return;
     }
 
-    if (s_wifi_runtime.link_up != 0U) {
+    if ((s_wifi_runtime.link_up != 0U) || (cyw43_state.wifi_join_state != 0U)) {
         (void)cyw43_wifi_leave(&cyw43_state, CYW43_ITF_STA);
         osDelay(100U);
+        ap6256_wifi_runtime_poll_burst(16U, 4U);
     }
     cyw43_state.wifi_join_state = 0U;
     s_wifi_runtime.link_up = 0U;
@@ -1480,6 +1809,43 @@ static void ap6256_wifi_runtime_disconnect_current(void)
     memset(s_wifi_runtime.last_mask, 0, sizeof(s_wifi_runtime.last_mask));
     memset(s_wifi_runtime.last_gateway, 0, sizeof(s_wifi_runtime.last_gateway));
     ap6256_connectivity_set_wifi_ip("", "", "", 0U);
+}
+
+static bool ap6256_wifi_runtime_restart_radio_for_next_candidate(const char *reason,
+                                                                 char *detail,
+                                                                 size_t detail_len)
+{
+    test_uart_printf("[ INFO ] wifi.connect stage: settle Wi-Fi runtime %s\r\n",
+                     (reason != NULL) ? reason : "before next candidate");
+
+    if (s_wifi_runtime.initialized != 0U) {
+        /*
+         * Full CYW43 deinit/reinit after a failed 5 GHz candidate has been
+         * observed to wedge the next setup/ioctl path. brcmfmac keeps the
+         * dongle alive between candidates: disassociate, drain async/control
+         * traffic, clear host-side scan/join state, then try the next BSSID in
+         * the same firmware session.
+         */
+        ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_SUSPEND, 3);
+        ap6256_wifi_runtime_disconnect_current();
+        cyw43_state.wifi_scan_state = 0;
+        cyw43_state.wifi_scan_cb = NULL;
+        cyw43_state.wifi_scan_env = NULL;
+        cyw43_state.wifi_join_state = 0U;
+        s_wifi_runtime.link_up = 0U;
+        ap6256_wifi_runtime_poll_burst(24U, 6U);
+        ap6256_wifi_runtime_quiesce_scan_events(reason);
+        ap6256_connectivity_set_wifi_runtime(s_wifi_runtime.stack_ready,
+                                             (network_manager_get_owner() == NETWORK_OWNER_WIFI) ? 1U : 0U,
+                                             s_wifi_runtime.last_scan_count,
+                                             s_wifi_runtime.last_rssi);
+        osDelay(100U);
+    }
+
+    if (!ap6256_wifi_runtime_prepare_scan_sdio_policy(detail, detail_len)) {
+        return false;
+    }
+    return ap6256_wifi_runtime_ensure_ready(detail, detail_len);
 }
 
 static const char *ap6256_wifi_runtime_auth_name(uint32_t auth_type)
@@ -1493,9 +1859,62 @@ static const char *ap6256_wifi_runtime_auth_name(uint32_t auth_type)
         return "wpa2_mixed";
     case CYW43_AUTH_WPA_TKIP_PSK:
         return "wpa_tkip";
+    case CYW43_AUTH_WPA3_WPA2_AES_PSK:
+        return "wpa3_wpa2";
+    case CYW43_AUTH_WPA3_SAE_AES_PSK:
+        return "wpa3_sae";
     default:
         return "unknown";
     }
+}
+
+static uint32_t ap6256_wifi_runtime_select_auth(uint8_t security_flags,
+                                                uint16_t akm_flags,
+                                                uint16_t pairwise_cipher_flags,
+                                                uint16_t group_cipher_flags,
+                                                uint8_t mfp,
+                                                uint8_t selected_5g)
+{
+    const uint8_t has_rsn = ((security_flags & CYW43_SCAN_SEC_RSN) != 0U) ? 1U : 0U;
+    const uint8_t has_wpa = ((security_flags & CYW43_SCAN_SEC_WPA) != 0U) ? 1U : 0U;
+    const uint8_t has_tkip =
+        (((pairwise_cipher_flags | group_cipher_flags) & CYW43_SCAN_CIPHER_TKIP) != 0U) ? 1U : 0U;
+    const uint8_t has_ccmp =
+        (((pairwise_cipher_flags | group_cipher_flags) & CYW43_SCAN_CIPHER_CCMP) != 0U) ? 1U : 0U;
+    const uint8_t has_psk = ((akm_flags & CYW43_SCAN_AKM_PSK) != 0U) ? 1U : 0U;
+    const uint8_t has_sae = ((akm_flags & CYW43_SCAN_AKM_SAE) != 0U) ? 1U : 0U;
+
+    /*
+     * Match brcmfmac's "configure from the selected BSS" behavior, but keep
+     * the v1 scope to open + WPA/WPA2 PSK. Prefer WPA2/CCMP when advertised;
+     * only use mixed mode when the BSS really advertises WPA1/TKIP/mixed facts.
+     *
+     * BCM43456/AP6256 transition-mode APs can advertise both PSK and SAE with
+     * optional MFP. Keep PMF-required BSSes rejected before this point, then
+     * prefer the PSK/CCMP side of transition mode for this cut. HIL proved the
+     * SAE password iovar path can reset this board before association, while
+     * the WPA2 path at least reaches firmware join/event processing.
+     */
+    if ((has_sae != 0U) && (has_psk != 0U) && (mfp != CYW43_SCAN_MFP_REQUIRED)) {
+        (void)selected_5g;
+        if ((has_ccmp != 0U) || (has_rsn != 0U)) {
+            return CYW43_AUTH_WPA2_AES_PSK;
+        }
+    }
+
+    if ((has_wpa != 0U) || (has_tkip != 0U)) {
+        if (has_rsn != 0U) {
+            return CYW43_AUTH_WPA2_MIXED_PSK;
+        }
+        return CYW43_AUTH_WPA_TKIP_PSK;
+    }
+
+    if ((has_rsn != 0U) || (has_ccmp != 0U) ||
+        ((akm_flags & (CYW43_SCAN_AKM_PSK | CYW43_SCAN_AKM_PSK_SHA256)) != 0U)) {
+        return CYW43_AUTH_WPA2_AES_PSK;
+    }
+
+    return CYW43_AUTH_WPA2_AES_PSK;
 }
 
 static int ap6256_wifi_runtime_bssid_is_valid(const uint8_t *bssid)
@@ -1598,6 +2017,64 @@ static int ap6256_wifi_runtime_get_iovar_u32(const char *name, uint32_t *value)
         *value = ap6256_wifi_runtime_get_le32(buf);
     }
     return rc;
+}
+
+static uint16_t ap6256_wifi_runtime_validated_join_chanspec(uint16_t channel,
+                                                            uint16_t preferred_chanspec)
+{
+    uint8_t buf[512];
+    uint32_t count;
+    uint16_t first_matching = 0U;
+    uint16_t derived = ap6256_wifi_runtime_primary_chanspec(channel);
+
+    if ((channel == 0U) || (channel == AP6256_WIFI_CHANNEL_5G_UNKNOWN)) {
+        return preferred_chanspec;
+    }
+    if (preferred_chanspec == 0U) {
+        preferred_chanspec = derived;
+    }
+
+    if (ap6256_wifi_runtime_channel_is_5g(channel) != 0U) {
+        /*
+         * For 5 GHz, prefer the raw scan-result chanspec. brcmfmac builds the
+         * association request from the selected BSS/channel definition; do not
+         * collapse 80/VHT chanspecs to a 20 MHz primary unless the scan result
+         * did not provide one.
+         */
+        return (preferred_chanspec != 0U) ? preferred_chanspec : derived;
+    }
+
+    /*
+     * For 2.4 GHz and unknown/raw-free inputs, keep the lightweight legality
+     * check against the firmware-exposed chanspec list.
+     */
+    if (ap6256_wifi_runtime_get_iovar_raw("chanspecs", buf, sizeof(buf)) != 0) {
+        return preferred_chanspec;
+    }
+
+    count = ap6256_wifi_runtime_get_le32(buf);
+    if (count > ((sizeof(buf) - 4U) / 4U)) {
+        count = (sizeof(buf) - 4U) / 4U;
+    }
+
+    for (uint32_t i = 0U; i < count; ++i) {
+        uint16_t candidate = (uint16_t)ap6256_wifi_runtime_get_le32(&buf[4U + (i * 4U)]);
+
+        if ((candidate & 0x00FFU) != (channel & 0x00FFU)) {
+            continue;
+        }
+        if (first_matching == 0U) {
+            first_matching = candidate;
+        }
+        if (candidate == preferred_chanspec) {
+            return preferred_chanspec;
+        }
+        if ((derived != 0U) && (candidate == derived)) {
+            return derived;
+        }
+    }
+
+    return (first_matching != 0U) ? first_matching : preferred_chanspec;
 }
 
 static int ap6256_wifi_runtime_set_ioctl_u32(uint32_t cmd, uint32_t value)
@@ -1744,6 +2221,10 @@ static ap6256_status_t ap6256_wifi_runtime_run_common(const char *ssid,
     uint32_t selected_auth = CYW43_AUTH_OPEN;
     uint8_t actual_assoc_channel = 0U;
     uint8_t actual_assoc_wifi5 = 0U;
+    uint8_t assoc_bssid[6];
+    uint8_t assoc_bssid_valid = 0U;
+
+    memset(assoc_bssid, 0, sizeof(assoc_bssid));
 
     if ((ssid == NULL) || (ssid[0] == '\0')) {
         (void)snprintf(detail, detail_len, "No Wi-Fi SSID is available for this run.");
@@ -1774,18 +2255,13 @@ static ap6256_status_t ap6256_wifi_runtime_run_common(const char *ssid,
             return AP6256_STATUS_BAD_PARAM;
         }
 
-        /*
-         * Roll back association to the last verified-good path: WPA2/AES
-         * WLC_SET_SSID with no BSSID/chanspec-directed join and no mixed-mode
-         * retry. The scan parser still reports mixed/TKIP facts for diagnostics,
-         * but trying alternate auth modes here masked the simple 2.4 GHz
-         * regression we are restoring.
-         */
         (void)auth_mode;
-        (void)security_flags;
-        (void)pairwise_cipher_flags;
-        (void)group_cipher_flags;
-        selected_auth = CYW43_AUTH_WPA2_AES_PSK;
+        selected_auth = ap6256_wifi_runtime_select_auth(security_flags,
+                                                        akm_flags,
+                                                        pairwise_cipher_flags,
+                                                        group_cipher_flags,
+                                                        mfp,
+                                                        ap6256_wifi_runtime_channel_is_5g(channel));
     } else {
         selected_auth = CYW43_AUTH_OPEN;
     }
@@ -1799,17 +2275,52 @@ static ap6256_status_t ap6256_wifi_runtime_run_common(const char *ssid,
 
     const uint8_t *join_bssid = NULL;
     uint32_t join_channel = CYW43_CHANNEL_NONE;
+    uint16_t assoc_target_chanspec = chanspec;
     if ((bssid != NULL) && (channel != 0U) && (channel != AP6256_WIFI_CHANNEL_5G_UNKNOWN)) {
-        test_uart_printf("[ INFO ] wifi.connect stage: directed join bssid=%02X:%02X:%02X:%02X:%02X:%02X ch=%u/%s cs=0x%04X\r\n",
+        uint16_t join_chanspec = ((ap6256_wifi_runtime_channel_is_5g(channel) != 0U) &&
+                                  (chanspec != 0U))
+            ? chanspec
+            : ap6256_wifi_runtime_primary_chanspec(channel);
+
+        if (join_chanspec == 0U) {
+            join_chanspec = chanspec;
+        }
+        join_chanspec = ap6256_wifi_runtime_validated_join_chanspec(channel, join_chanspec);
+        assoc_target_chanspec = join_chanspec;
+
+        test_uart_printf("[ INFO ] wifi.connect stage: selected BSS bssid=%02X:%02X:%02X:%02X:%02X:%02X ch=%u/%s scan_cs=0x%04X join_cs=0x%04X\r\n",
                          bssid[0], bssid[1], bssid[2],
                          bssid[3], bssid[4], bssid[5],
                          (unsigned)channel,
                          ap6256_wifi_runtime_channel_band_name(channel),
-                         chanspec);
-        join_bssid = bssid;
-        (void)chanspec;
-        join_channel = (uint32_t)channel;
+                         chanspec,
+                         join_chanspec);
+        if (ap6256_wifi_runtime_channel_is_5g(channel) != 0U) {
+            /*
+             * Directed BSSID/chanspec association currently resets this
+             * AP6256 path immediately after the WLC_SET_SSID control TX. Keep
+             * the candidate BSSID/chanspec as the qualification target, but use
+             * brcmfmac's safer channel-primed SSID join shape for the actual
+             * command: WLC_SET_BAND/WLC_SET_CHANNEL first, then SSID-only
+             * WLC_SET_SSID. Post-join validation still rejects the wrong BSSID
+             * or a non-5 GHz association.
+             */
+            test_uart_write_str("[ INFO ] wifi.connect stage: 5GHz brcmfmac channel-primed SSID join\r\n");
+            join_bssid = NULL;
+            join_channel = channel;
+        } else {
+            test_uart_write_str("[ INFO ] wifi.connect stage: directed 2.4GHz BSSID/chanspec join\r\n");
+            join_bssid = bssid;
+            join_channel = CYW43_CHANNEL_FROM_CHANSPEC(join_chanspec);
+        }
     }
+    ap6256_cyw43_port_record_assoc_target(bssid,
+                                          channel,
+                                          ap6256_wifi_runtime_channel_is_5g(channel),
+                                          assoc_target_chanspec,
+                                          selected_auth,
+                                          s_wifi_runtime_join_candidate_index,
+                                          s_wifi_runtime_join_candidate_count);
 
     rc = cyw43_wifi_join(&cyw43_state,
                          strlen(ssid),
@@ -1847,7 +2358,11 @@ static ap6256_status_t ap6256_wifi_runtime_run_common(const char *ssid,
 
     test_uart_printf("[ INFO ] wifi.connect stage: wait link/dhcp auth=%s\r\n",
                      ap6256_wifi_runtime_auth_name(selected_auth));
-    if (!ap6256_wifi_runtime_wait_for_link(AP6256_WIFI_DHCP_TIMEOUT_MS, &final_status)) {
+    if (!ap6256_wifi_runtime_wait_for_link(AP6256_WIFI_DHCP_TIMEOUT_MS,
+                                           &final_status,
+                                           bssid,
+                                           secure,
+                                           ap6256_wifi_runtime_channel_is_5g(channel))) {
         const char *reason = "timed out waiting for association/DHCP";
 
         if (final_status == CYW43_LINK_BADAUTH) {
@@ -1856,6 +2371,10 @@ static ap6256_status_t ap6256_wifi_runtime_run_common(const char *ssid,
             reason = "SSID disappeared or was not found";
         } else if (final_status == CYW43_LINK_FAIL) {
             reason = "firmware reported join failure";
+        } else if ((secure != 0U) &&
+                   ((cyw43_state.wifi_join_state & AP6256_CYW43_JOIN_STATE_KEYED) == 0U)) {
+            reason = "auth_failure: WPA/WPA2 key exchange did not complete";
+            final_status = CYW43_LINK_BADAUTH;
         }
 
         (void)snprintf(detail,
@@ -1870,6 +2389,26 @@ static ap6256_status_t ap6256_wifi_runtime_run_common(const char *ssid,
     }
 
     s_wifi_runtime.link_up = 1U;
+    if (bssid != NULL) {
+        assoc_bssid_valid =
+            (ap6256_wifi_runtime_probe_associated_bssid(assoc_bssid) != 0) ? 1U : 0U;
+        test_uart_printf("[ INFO ] wifi.connect stage: associated bssid valid=%u %02X:%02X:%02X:%02X:%02X:%02X\r\n",
+                         assoc_bssid_valid,
+                         assoc_bssid[0],
+                         assoc_bssid[1],
+                         assoc_bssid[2],
+                         assoc_bssid[3],
+                         assoc_bssid[4],
+                         assoc_bssid[5]);
+        if ((assoc_bssid_valid != 0U) && (memcmp(assoc_bssid, bssid, sizeof(assoc_bssid)) != 0)) {
+            (void)snprintf(detail,
+                           detail_len,
+                           "Selected BSSID for '%s' did not match associated BSSID.",
+                           ssid);
+            ap6256_connectivity_set_wifi_note(detail);
+            return AP6256_STATUS_TIMEOUT;
+        }
+    }
     if (cyw43_wifi_get_rssi(&cyw43_state, &rssi) == 0) {
         s_wifi_runtime.last_rssi = (int16_t)rssi;
     }
@@ -1911,6 +2450,120 @@ static ap6256_status_t ap6256_wifi_runtime_run_common(const char *ssid,
                    actual_assoc_wifi5);
     ap6256_connectivity_set_wifi_note(detail);
     return AP6256_STATUS_OK;
+}
+
+static ap6256_status_t ap6256_wifi_runtime_attempt_join_entry(const ap6256_wifi_scan_entry_t *entry,
+                                                              const char *password,
+                                                              const char *fixture_classification,
+                                                              uint8_t candidate_index,
+                                                              uint8_t candidate_count,
+                                                              ap6256_wifi_runtime_summary_t *summary,
+                                                              char *detail,
+                                                              size_t detail_len)
+{
+    ap6256_wifi_scan_entry_t selected_copy;
+    ap6256_status_t st;
+    char unsupported_reason[64];
+
+    if ((entry == NULL) || (detail == NULL) || (detail_len == 0U)) {
+        return AP6256_STATUS_BAD_PARAM;
+    }
+
+    ap6256_connectivity_set_wifi_candidate_diag(candidate_index, candidate_count);
+    ap6256_connectivity_set_wifi_selection_diag(entry->bssid,
+                                                entry->channel,
+                                                ap6256_wifi_runtime_channel_is_5g(entry->channel),
+                                                fixture_classification);
+    ap6256_connectivity_set_wifi_selection_security_diag(entry->auth_mode,
+                                                         entry->security_flags,
+                                                         entry->akm_flags,
+                                                         entry->pairwise_cipher_flags,
+                                                         entry->group_cipher_flags,
+                                                         entry->mfp,
+                                                         entry->rsn_cap,
+                                                         entry->chanspec);
+
+    unsupported_reason[0] = '\0';
+    if (ap6256_wifi_runtime_scan_security_supported(entry,
+                                                    unsupported_reason,
+                                                    sizeof(unsupported_reason)) == 0U) {
+        (void)snprintf(detail,
+                       detail_len,
+                       "Selected SSID '%s' uses %s; sec=%s akm=%s pair=%s mfp=%s.",
+                       entry->ssid,
+                       unsupported_reason,
+                       ap6256_wifi_runtime_security_name(entry->auth_mode),
+                       ap6256_wifi_runtime_akm_name(entry->akm_flags),
+                       ap6256_wifi_runtime_cipher_name(entry->pairwise_cipher_flags),
+                       ap6256_wifi_runtime_mfp_name(entry->mfp));
+        ap6256_connectivity_set_wifi_note(detail);
+        return AP6256_STATUS_BAD_PARAM;
+    }
+
+    if ((entry->secure != 0U) && ((password == NULL) || (password[0] == '\0'))) {
+        (void)snprintf(detail, detail_len, "SSID '%s' requires a password.", entry->ssid);
+        ap6256_connectivity_set_wifi_note(detail);
+        return AP6256_STATUS_BAD_PARAM;
+    }
+
+    selected_copy = *entry;
+    if (!ap6256_wifi_runtime_recover_radio_before_join("after scan", detail, detail_len)) {
+        ap6256_connectivity_set_wifi_note(detail);
+        return AP6256_STATUS_IO_ERROR;
+    }
+    if (ap6256_wifi_runtime_channel_is_5g(selected_copy.channel) != 0U) {
+        int32_t block_rc;
+
+        ap6256_cyw43_port_set_runtime_f2_block_size(AP6256_WIFI_JOIN_F2_BLOCK_SIZE);
+        block_rc = ap6256_cyw43_port_apply_runtime_f2_block_size();
+        if (block_rc != 0) {
+            (void)snprintf(detail,
+                           detail_len,
+                           "Failed to apply 5GHz join F2 block size %u rc=%ld.",
+                           (unsigned)AP6256_WIFI_JOIN_F2_BLOCK_SIZE,
+                           (long)block_rc);
+            ap6256_connectivity_set_wifi_note(detail);
+            return AP6256_STATUS_IO_ERROR;
+        }
+    }
+
+    test_uart_printf("[ INFO ] wifi.connect stage: profile selected candidate=%u/%u bssid=%02X:%02X:%02X:%02X:%02X:%02X ch=%u/%s cs=0x%04X rssi=%d\r\n",
+                     candidate_index,
+                     candidate_count,
+                     selected_copy.bssid[0],
+                     selected_copy.bssid[1],
+                     selected_copy.bssid[2],
+                     selected_copy.bssid[3],
+                     selected_copy.bssid[4],
+                     selected_copy.bssid[5],
+                     selected_copy.channel,
+                     ap6256_wifi_runtime_channel_band_name(selected_copy.channel),
+                     selected_copy.chanspec,
+                     (int)selected_copy.rssi);
+    test_uart_printf("[ INFO ] wifi.connect stage: join start f2bs=%lu\r\n",
+                     (unsigned long)ap6256_cyw43_port_runtime_f2_block_size());
+
+    s_wifi_runtime_join_candidate_index = candidate_index;
+    s_wifi_runtime_join_candidate_count = candidate_count;
+    st = ap6256_wifi_runtime_run_common(selected_copy.ssid,
+                                        password,
+                                        selected_copy.secure,
+                                        selected_copy.auth_mode,
+                                        selected_copy.security_flags,
+                                        selected_copy.akm_flags,
+                                        selected_copy.pairwise_cipher_flags,
+                                        selected_copy.group_cipher_flags,
+                                        selected_copy.mfp,
+                                        selected_copy.bssid,
+                                        selected_copy.channel,
+                                        selected_copy.chanspec,
+                                        summary,
+                                        detail,
+                                        detail_len);
+    if (st == AP6256_STATUS_OK) {
+        ap6256_wifi_runtime_capture_profile(&selected_copy, password);
+    }
+    return st;
 }
 
 void ap6256_wifi_runtime_poll(void)
@@ -2121,7 +2774,7 @@ scan_start_retry:
             test_uart_printf("[ INFO ] wifi.connect stage: visible 5GHz scan start failed rc=%d\r\n", rc);
         }
         if (ap6256_wifi_runtime_has_5g_scan_result() == 0U) {
-            test_uart_write_str("[ INFO ] wifi.connect stage: no visible 5GHz BSSID; hidden 5GHz SSID may be entered manually\r\n");
+            test_uart_write_str("[ INFO ] wifi.connect stage: no visible 5GHz BSSID in current list; directed 5GHz SSID may be entered manually\r\n");
         }
     }
 
@@ -2156,10 +2809,10 @@ scan_start_retry:
 
     selected = &s_wifi_runtime.scan[(uint32_t)scan_index];
     if (selected->channel == AP6256_WIFI_CHANNEL_5G_UNKNOWN) {
-        char hidden_ssid[33];
+        char directed_ssid[33];
 
-        (void)snprintf(hidden_ssid, sizeof(hidden_ssid), "%s", selected->ssid);
-        selected = ap6256_wifi_runtime_resolve_hidden_5g_selection(hidden_ssid, detail, detail_len);
+        (void)snprintf(directed_ssid, sizeof(directed_ssid), "%s", selected->ssid);
+        selected = ap6256_wifi_runtime_resolve_directed_5g_selection(directed_ssid, detail, detail_len);
         if (selected == NULL) {
             ap6256_connectivity_set_wifi_note(detail);
             ap6256_wifi_runtime_release_owner_with_breadcrumb(AP6256_CYW43_BREADCRUMB_RELEASE,
@@ -2202,16 +2855,6 @@ scan_start_retry:
                                                          selected->mfp,
                                                          selected->rsn_cap,
                                                          selected->chanspec);
-    if ((selected->auth_mode != 0U) && ((selected->auth_mode & 0x04U) == 0U)) {
-        (void)snprintf(detail,
-                       detail_len,
-                       "Selected SSID '%s' uses unsupported security mode '%s'.",
-                       selected->ssid,
-                       ap6256_wifi_runtime_security_name(selected->auth_mode));
-        ap6256_connectivity_set_wifi_note(detail);
-        ap6256_wifi_runtime_release_owner_with_breadcrumb(AP6256_CYW43_BREADCRUMB_RELEASE, AP6256_STATUS_BAD_PARAM);
-        return AP6256_STATUS_BAD_PARAM;
-    }
     {
         char unsupported_reason[64];
         unsupported_reason[0] = '\0';
@@ -2257,6 +2900,9 @@ scan_start_retry:
 
     test_uart_printf("[ INFO ] wifi.connect stage: join start f2bs=%lu\r\n",
                      (unsigned long)ap6256_cyw43_port_runtime_f2_block_size());
+    ap6256_connectivity_set_wifi_candidate_diag(1U, 1U);
+    s_wifi_runtime_join_candidate_index = 1U;
+    s_wifi_runtime_join_candidate_count = 1U;
     ap6256_wifi_runtime_capture_profile(selected, password);
     {
         ap6256_status_t st = ap6256_wifi_runtime_run_common(selected->ssid,
@@ -2293,6 +2939,10 @@ ap6256_status_t ap6256_wifi_runtime_run_profile(const char *ssid,
     const char *fixture_classification = "not_checked";
     int rc;
     uint8_t scan_start_recovery_attempted = 0U;
+    uint32_t join_candidate_count = 0U;
+    uint32_t unsupported_candidate_count = 0U;
+    ap6256_wifi_scan_entry_t fallback_candidate;
+    uint8_t fallback_candidate_valid = 0U;
 
     if ((detail == NULL) || (detail_len == 0U)) {
         return AP6256_STATUS_BAD_PARAM;
@@ -2319,6 +2969,52 @@ ap6256_status_t ap6256_wifi_runtime_run_profile(const char *ssid,
         ap6256_wifi_runtime_release_owner_with_breadcrumb(AP6256_CYW43_BREADCRUMB_RELEASE,
                                                           AP6256_STATUS_IO_ERROR);
         return AP6256_STATUS_IO_ERROR;
+    }
+
+    if (preferred_channel > 14U) {
+        test_uart_printf("[ INFO ] wifi.connect stage: profile directed 5GHz scan ssid=%s requested_ch=%u\r\n",
+                         ssid,
+                         (unsigned)preferred_channel);
+        selected = ap6256_wifi_runtime_resolve_directed_5g_selection(ssid, detail, detail_len);
+        if (selected != NULL) {
+            join_candidate_count =
+                ap6256_wifi_runtime_collect_ssid_5g_candidates(ssid,
+                                                               preferred_channel,
+                                                               s_wifi_runtime_join_candidates,
+                                                               AP6256_WIFI_MAX_JOIN_CANDIDATES,
+                                                               &unsupported_candidate_count);
+        }
+        fixture_classification = (join_candidate_count != 0U) ? "selected_channel_5g_bss" : "fixture_no_channel_bss";
+        if ((selected != NULL) && (join_candidate_count == 0U)) {
+            (void)snprintf(detail,
+                           detail_len,
+                           "SSID '%s' was not found on requested 5GHz channel %u; found best channel %u.",
+                           ssid,
+                           (unsigned)preferred_channel,
+                           (unsigned)selected->channel);
+        }
+        if (join_candidate_count == 0U) {
+            if (detail[0] == '\0') {
+                (void)snprintf(detail,
+                               detail_len,
+                               "SSID '%s' was not found on requested 5GHz channel %u.",
+                               ssid,
+                               (unsigned)preferred_channel);
+            }
+            ap6256_connectivity_set_wifi_selection_diag(NULL,
+                                                        preferred_channel,
+                                                        1U,
+                                                        fixture_classification);
+            ap6256_connectivity_set_wifi_candidate_diag(0U, 0U);
+            ap6256_connectivity_set_wifi_note(detail);
+            ap6256_wifi_runtime_release_owner_with_breadcrumb(AP6256_CYW43_BREADCRUMB_RELEASE,
+                                                              AP6256_STATUS_TIMEOUT);
+            return AP6256_STATUS_TIMEOUT;
+        }
+        ap6256_wifi_runtime_print_join_candidates(ssid,
+                                                  s_wifi_runtime_join_candidates,
+                                                  join_candidate_count);
+        goto profile_try_candidates;
     }
 
 profile_scan_retry:
@@ -2373,7 +3069,7 @@ profile_scan_retry:
     }
 
     ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_SCAN_ACCEPTED, 0);
-    if (!ap6256_wifi_runtime_wait_for_scan_complete(AP6256_WIFI_SCAN_TIMEOUT_MS)) {
+    if (!ap6256_wifi_runtime_wait_for_scan_complete(AP6256_WIFI_PROFILE_BROAD_SCAN_TIMEOUT_MS)) {
         uint8_t transport_timeout =
             ((ap6256_cyw43_port_poll_header_read_status() == -CYW43_ETIMEDOUT) ||
              (ap6256_cyw43_port_poll_payload_read_status() == -CYW43_ETIMEDOUT)) ? 1U : 0U;
@@ -2402,7 +3098,16 @@ profile_scan_retry:
     }
     ap6256_wifi_runtime_sort_scan_results();
 
-    if (preferred_channel != 0U) {
+    if ((preferred_channel == 0U) || (preferred_channel > 14U)) {
+        join_candidate_count =
+            ap6256_wifi_runtime_collect_ssid_5g_candidates(ssid,
+                                                           0U,
+                                                           s_wifi_runtime_join_candidates,
+                                                           AP6256_WIFI_MAX_JOIN_CANDIDATES,
+                                                           &unsupported_candidate_count);
+    }
+
+    if ((preferred_channel != 0U) && (preferred_channel <= 14U)) {
         selected = ap6256_wifi_runtime_find_best_ssid_channel(ssid, preferred_channel);
         fixture_classification = (selected != NULL) ? "selected_channel_bss" : "fixture_no_channel_bss";
         if (selected == NULL) {
@@ -2415,15 +3120,146 @@ profile_scan_retry:
     } else {
         selected = ap6256_wifi_runtime_find_best_ssid_any(ssid);
         fixture_classification = (selected != NULL) ? "selected_exact_bss" : "fixture_no_bss";
+        if ((selected != NULL) &&
+            (ap6256_wifi_runtime_channel_is_5g(selected->channel) == 0U)) {
+            fallback_candidate = *selected;
+            fallback_candidate_valid = 1U;
+        }
+    }
+    if (((preferred_channel == 0U) || (preferred_channel > 14U)) &&
+        (join_candidate_count == 0U)) {
+        if ((selected == NULL) ||
+            (ap6256_wifi_runtime_channel_is_5g(selected->channel) == 0U)) {
+            test_uart_printf("[ INFO ] wifi.connect stage: profile broad scan found %lu results but not '%s'; trying directed 5GHz scan\r\n",
+                             (unsigned long)s_wifi_runtime.last_scan_count,
+                             ssid);
+            selected = ap6256_wifi_runtime_resolve_directed_5g_selection(ssid, detail, detail_len);
+            if (selected != NULL) {
+                join_candidate_count =
+                    ap6256_wifi_runtime_collect_ssid_5g_candidates(ssid,
+                                                                   0U,
+                                                                   s_wifi_runtime_join_candidates,
+                                                                   AP6256_WIFI_MAX_JOIN_CANDIDATES,
+                                                                   &unsupported_candidate_count);
+            }
+            fixture_classification = (join_candidate_count != 0U) ? "directed_5g_bss" : "fixture_no_5g_bss";
+        }
+    }
+    if (((preferred_channel == 0U) || (preferred_channel > 14U)) &&
+        (join_candidate_count != 0U)) {
+        ap6256_wifi_runtime_print_join_candidates(ssid,
+                                                  s_wifi_runtime_join_candidates,
+                                                  join_candidate_count);
+        goto profile_try_candidates;
+    }
+    if ((selected == NULL) && (fallback_candidate_valid != 0U)) {
+        selected = &fallback_candidate;
+        fixture_classification = "fallback_2g_bss";
     }
     if (selected == NULL) {
         if (detail[0] == '\0') {
-            (void)snprintf(detail, detail_len, "SSID '%s' was not found during visible scan.", ssid);
+            (void)snprintf(detail,
+                           detail_len,
+                           "SSID '%s' was not found during visible or directed 5GHz scan.",
+                           ssid);
+        }
+    }
+    if (selected == NULL) {
+        if (strcmp(fixture_classification, "fixture_no_5g_bss") == 0) {
+            ap6256_connectivity_set_wifi_selection_diag(NULL, 0U, 1U, fixture_classification);
+            ap6256_connectivity_set_wifi_candidate_diag(0U, 0U);
         }
         ap6256_connectivity_set_wifi_note(detail);
         ap6256_wifi_runtime_release_owner_with_breadcrumb(AP6256_CYW43_BREADCRUMB_RELEASE,
                                                           AP6256_STATUS_TIMEOUT);
         return AP6256_STATUS_TIMEOUT;
+    }
+
+profile_try_candidates:
+    if (join_candidate_count != 0U) {
+        ap6256_status_t final_candidate_status = AP6256_STATUS_TIMEOUT;
+
+        for (uint32_t i = 0U; i < join_candidate_count; ++i) {
+            ap6256_wifi_scan_entry_t attempt = s_wifi_runtime_join_candidates[i];
+            uint16_t derived_chanspec = ap6256_wifi_runtime_primary_chanspec(attempt.channel);
+            uint8_t candidate_index = (uint8_t)((i + 1U) & 0x7FU);
+            uint8_t candidate_count = (uint8_t)(join_candidate_count & 0x7FU);
+            ap6256_status_t st;
+
+            detail[0] = '\0';
+            st = ap6256_wifi_runtime_attempt_join_entry(&attempt,
+                                                        password,
+                                                        fixture_classification,
+                                                        candidate_index,
+                                                        candidate_count,
+                                                        summary,
+                                                        detail,
+                                                        detail_len);
+            final_candidate_status = st;
+            if (st == AP6256_STATUS_OK) {
+                ap6256_wifi_runtime_set_poll_paused(0U);
+                ap6256_wifi_runtime_release_owner_with_breadcrumb(AP6256_CYW43_BREADCRUMB_RELEASE, st);
+                return st;
+            }
+
+            test_uart_printf("[ INFO ] wifi.connect stage: candidate %lu/%lu failed st=%d detail=%s\r\n",
+                             (unsigned long)(i + 1U),
+                             (unsigned long)join_candidate_count,
+                             (int)st,
+                             (detail[0] != '\0') ? detail : "n/a");
+
+            if ((st == AP6256_STATUS_BAD_PARAM) ||
+                (strstr(detail, "auth_failure") != NULL) ||
+                (strstr(detail, "unsupported") != NULL)) {
+                break;
+            }
+
+            /*
+             * No-progress on one BSSID does not prove the raw VHT chanspec was
+             * rejected, and retrying the same BSSID has repeatedly left stale
+             * firmware state for the next candidate. Move straight to the next
+             * scanned BSSID; a derived-chanspec retry should only come back if
+             * firmware explicitly rejects the raw association command.
+             */
+            if ((attempt.chanspec != 0U) &&
+                (derived_chanspec != 0U) &&
+                (attempt.chanspec != derived_chanspec)) {
+                test_uart_printf("[ INFO ] wifi.connect stage: skip chanspec fallback for candidate %lu/%lu raw=0x%04X derived=0x%04X\r\n",
+                                 (unsigned long)(i + 1U),
+                                 (unsigned long)join_candidate_count,
+                                 attempt.chanspec,
+                                 derived_chanspec);
+            }
+
+            if ((i + 1U) < join_candidate_count) {
+                detail[0] = '\0';
+                if (!ap6256_wifi_runtime_restart_radio_for_next_candidate("before next 5GHz candidate",
+                                                                          detail,
+                                                                          detail_len)) {
+                    final_candidate_status = AP6256_STATUS_IO_ERROR;
+                    if (detail[0] == '\0') {
+                        (void)snprintf(detail,
+                                       detail_len,
+                                       "Failed to restart Wi-Fi runtime before next 5GHz candidate.");
+                    }
+                    break;
+                }
+            }
+        }
+
+        if (detail[0] == '\0') {
+            (void)snprintf(detail,
+                           detail_len,
+                           "All %lu 5GHz candidates for SSID '%s' failed; unsupported=%lu.",
+                           (unsigned long)join_candidate_count,
+                           ssid,
+                           (unsigned long)unsupported_candidate_count);
+        }
+        ap6256_connectivity_set_wifi_note(detail);
+        ap6256_wifi_runtime_set_poll_paused(0U);
+        ap6256_wifi_runtime_release_owner_with_breadcrumb(AP6256_CYW43_BREADCRUMB_RELEASE,
+                                                          final_candidate_status);
+        return final_candidate_status;
     }
 
     ap6256_connectivity_set_wifi_selection_diag(selected->bssid,
@@ -2491,6 +3327,9 @@ profile_scan_retry:
                      (int)selected->rssi);
     test_uart_printf("[ INFO ] wifi.connect stage: join start f2bs=%lu\r\n",
                      (unsigned long)ap6256_cyw43_port_runtime_f2_block_size());
+    ap6256_connectivity_set_wifi_candidate_diag(1U, 1U);
+    s_wifi_runtime_join_candidate_index = 1U;
+    s_wifi_runtime_join_candidate_count = 1U;
     ap6256_wifi_runtime_capture_profile(selected, password);
     {
         ap6256_status_t st = ap6256_wifi_runtime_run_common(selected->ssid,

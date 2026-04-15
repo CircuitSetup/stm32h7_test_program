@@ -95,13 +95,11 @@ static volatile uint32_t s_cyw43_backplane_address;
 static volatile uint8_t s_cyw43_backplane_width_bytes;
 static volatile int32_t s_cyw43_backplane_status;
 /*
- * Recovery default: the last hardware log that completed 2.4 GHz association
- * and DHCP used the generic brcmfmac43456-sdio.txt NVRAM path. Keep the
- * AP6256-specific reference NVRAM available through the existing toggle, but
- * boot the Wi-Fi runtime from the known-good asset while we restore baseline
- * connectivity.
+ * Runtime default: AP6256-specific nvram_ap6256.txt. The generic
+ * brcmfmac43456-sdio.txt remains available through the console toggle for
+ * bench A/B, but 5 GHz TX/FEM/regulatory behavior should use the module NVRAM.
  */
-static volatile uint8_t s_cyw43_reference_nvram_enabled = 1U;
+static volatile uint8_t s_cyw43_reference_nvram_enabled = 0U;
 static volatile uint32_t s_cyw43_last_async_event_type;
 static volatile uint32_t s_cyw43_last_async_event_status;
 static volatile uint32_t s_cyw43_last_async_event_reason;
@@ -150,6 +148,19 @@ static volatile uint8_t s_cyw43_ioctl_recovery_attempted;
 static volatile uint8_t s_cyw43_ioctl_forced_probe_attempted;
 static volatile uint8_t s_cyw43_ioctl_resend_attempted;
 static volatile uint32_t s_cyw43_last_pre_reset_persist_tick;
+static volatile uint8_t s_cyw43_assoc_target_valid;
+static volatile uint8_t s_cyw43_assoc_target_bssid[6];
+static volatile uint8_t s_cyw43_assoc_target_channel;
+static volatile uint8_t s_cyw43_assoc_target_5g;
+static volatile uint8_t s_cyw43_assoc_target_auth_code;
+static volatile uint8_t s_cyw43_assoc_candidate_index;
+static volatile uint8_t s_cyw43_assoc_candidate_count;
+static volatile uint16_t s_cyw43_assoc_target_chanspec;
+static volatile uint8_t s_cyw43_last_rx_class;
+static volatile uint8_t s_cyw43_last_rx_channel;
+static volatile uint16_t s_cyw43_last_rx_sdpcm_len;
+static volatile uint16_t s_cyw43_last_rx_payload_len;
+static volatile uint32_t s_cyw43_last_rx_first_word;
 static ap6256_cyw43_control_tx_diag_t s_cyw43_control_tx_diag;
 
 static void ap6256_cyw43_enable_backup_access(void)
@@ -207,8 +218,9 @@ static void ap6256_cyw43_port_persist_pre_reset_diag(uint8_t force)
     uint32_t packet_pack;
     uint32_t cmd53_pack;
     uint32_t send_pack;
-    uint32_t completed_cmd_pack;
-    uint32_t completed_meta_pack;
+    uint32_t assoc_target_bssid_lo;
+    uint32_t assoc_target_bssid_hi;
+    uint32_t assoc_target_meta;
 
     if ((force == 0U) &&
         ((now - s_cyw43_last_pre_reset_persist_tick) < AP6256_CYW43_PRE_RESET_THROTTLE_MS)) {
@@ -221,25 +233,37 @@ static void ap6256_cyw43_port_persist_pre_reset_diag(uint8_t force)
     packet_pack = (s_cyw43_packet_pending & 0x01U) |
                   ((uint32_t)(s_cyw43_packet_pending_source & 0x07U) << 1U) |
                   ((uint32_t)s_cyw43_dat1_level << 8U) |
-                  ((uint32_t)s_cyw43_cccr_int_pending << 16U);
+                  ((uint32_t)s_cyw43_cccr_int_pending << 16U) |
+                  ((uint32_t)s_cyw43_last_rx_class << 24U);
     cmd53_pack = (s_cyw43_last_cmd53_write & 0x01U) |
                  ((uint32_t)(s_cyw43_last_cmd53_function & 0x07U) << 1U) |
                  ((uint32_t)(s_cyw43_last_cmd53_block_mode & 0x01U) << 4U) |
-                 ((uint32_t)s_cyw43_last_cmd53_frame_size << 8U);
+                 ((uint32_t)s_cyw43_last_cmd53_frame_size << 8U) |
+                 ((uint32_t)s_cyw43_last_rx_channel << 24U);
     send_pack = (uint32_t)s_cyw43_send_flow_control |
                 ((uint32_t)s_cyw43_send_tx_seq << 8U) |
                 ((uint32_t)s_cyw43_send_credit << 16U) |
                 ((uint32_t)(s_cyw43_send_synthetic_credit & 0x01U) << 24U);
-    completed_cmd_pack = ((uint32_t)(s_cyw43_last_completed_ioctl_cmd & 0xFFFFU)) |
-                         ((uint32_t)((uint8_t)s_cyw43_last_completed_ioctl_status) << 16U) |
-                         ((uint32_t)((uint8_t)s_cyw43_last_completed_ioctl_poll) << 24U);
-    completed_meta_pack = ((uint32_t)(s_cyw43_last_completed_ioctl_kind & 0xFFU)) |
-                          ((uint32_t)(s_cyw43_last_completed_ioctl_iface & 0xFFU) << 8U) |
-                          ((uint32_t)(s_cyw43_last_completed_ioctl_id & 0xFFFFU) << 16U);
+    assoc_target_bssid_lo =
+        ((uint32_t)s_cyw43_assoc_target_bssid[0]) |
+        ((uint32_t)s_cyw43_assoc_target_bssid[1] << 8U) |
+        ((uint32_t)s_cyw43_assoc_target_bssid[2] << 16U) |
+        ((uint32_t)s_cyw43_assoc_target_bssid[3] << 24U);
+    assoc_target_bssid_hi =
+        ((uint32_t)s_cyw43_assoc_target_bssid[4]) |
+        ((uint32_t)s_cyw43_assoc_target_bssid[5] << 8U) |
+        ((uint32_t)s_cyw43_assoc_target_channel << 16U) |
+        ((uint32_t)s_cyw43_assoc_target_auth_code << 24U);
+    assoc_target_meta =
+        ((uint32_t)s_cyw43_assoc_target_chanspec & 0xFFFFU) |
+        ((uint32_t)(s_cyw43_assoc_target_5g & 0x01U) << 16U) |
+        ((uint32_t)(s_cyw43_assoc_candidate_index & 0x7FU) << 17U) |
+        ((uint32_t)(s_cyw43_assoc_candidate_count & 0x7FU) << 24U) |
+        ((uint32_t)(s_cyw43_assoc_target_valid & 0x01U) << 31U);
 
     ap6256_cyw43_enable_backup_access();
-    RTC->BKP6R = completed_cmd_pack;
-    RTC->BKP7R = completed_meta_pack;
+    RTC->BKP6R = assoc_target_bssid_lo;
+    RTC->BKP7R = assoc_target_bssid_hi;
     RTC->BKP8R = AP6256_CYW43_PRE_RESET_MAGIC;
     RTC->BKP9R = s_cyw43_breadcrumb_stage;
     RTC->BKP10R = (uint32_t)s_cyw43_breadcrumb_detail;
@@ -252,13 +276,17 @@ static void ap6256_cyw43_port_persist_pre_reset_diag(uint8_t force)
     RTC->BKP17R = (uint32_t)s_cyw43_last_ioctl_status;
     RTC->BKP18R = (uint32_t)s_cyw43_last_ioctl_poll;
     RTC->BKP19R = packet_pack;
-    RTC->BKP20R = (uint32_t)s_cyw43_packet_pending_status;
+    RTC->BKP20R = assoc_target_meta;
     RTC->BKP21R = s_cyw43_f1_int_status;
     RTC->BKP22R = (uint32_t)s_cyw43_kso_status;
     RTC->BKP23R = s_cyw43_last_cmd;
     RTC->BKP24R = s_cyw43_last_cmd_arg;
     RTC->BKP25R = (uint32_t)s_cyw43_last_cmd_status;
-    RTC->BKP26R = s_cyw43_last_cmd_response;
+    RTC->BKP26R =
+        (s_cyw43_last_cmd_response & 0xFFU) |
+        ((s_cyw43_last_async_event_type & 0xFFU) << 8U) |
+        ((s_cyw43_last_async_event_status & 0xFFU) << 16U) |
+        ((s_cyw43_last_async_event_reason & 0xFFU) << 24U);
     RTC->BKP27R = cmd53_pack;
     RTC->BKP28R = s_cyw43_last_cmd53_block_size;
     RTC->BKP29R = s_cyw43_last_cmd53_length;
@@ -272,8 +300,9 @@ static void ap6256_cyw43_port_read_pre_reset_diag(ap6256_cyw43_pre_reset_diag_t 
     uint32_t packet_pack;
     uint32_t cmd53_pack;
     uint32_t send_pack;
-    uint32_t completed_meta_pack;
-    uint32_t completed_cmd_pack;
+    uint32_t assoc_target_bssid_lo;
+    uint32_t assoc_target_bssid_hi;
+    uint32_t assoc_target_meta;
 
     if (diag == NULL) {
         return;
@@ -302,34 +331,55 @@ static void ap6256_cyw43_port_read_pre_reset_diag(ap6256_cyw43_pre_reset_diag_t 
     diag->packet_pending_source = (packet_pack >> 1U) & 0x07U;
     diag->dat1_level = (packet_pack >> 8U) & 0xFFU;
     diag->cccr_int_pending = (packet_pack >> 16U) & 0xFFU;
-    diag->packet_pending_status = (int32_t)RTC->BKP20R;
+    diag->rx_class = (packet_pack >> 24U) & 0xFFU;
+    diag->packet_pending_status = 0;
     diag->f1_int_status = RTC->BKP21R;
     diag->kso_status = (int32_t)RTC->BKP22R;
     diag->last_cmd = RTC->BKP23R;
     diag->last_cmd_arg = RTC->BKP24R;
     diag->last_cmd_status = (int32_t)RTC->BKP25R;
-    diag->last_cmd_response = RTC->BKP26R;
+    diag->last_cmd_response = RTC->BKP26R & 0xFFU;
+    diag->async_event_type = (RTC->BKP26R >> 8U) & 0xFFU;
+    diag->async_event_status = (RTC->BKP26R >> 16U) & 0xFFU;
+    diag->async_event_reason = (RTC->BKP26R >> 24U) & 0xFFU;
+    diag->async_event_flags = 0U;
     cmd53_pack = RTC->BKP27R;
     diag->cmd53_write = cmd53_pack & 0x01U;
     diag->cmd53_function = (cmd53_pack >> 1U) & 0x07U;
     diag->cmd53_block_mode = (cmd53_pack >> 4U) & 0x01U;
     diag->cmd53_frame_size = (uint16_t)((cmd53_pack >> 8U) & 0xFFFFU);
+    diag->rx_channel = (cmd53_pack >> 24U) & 0xFFU;
     diag->cmd53_block_size = RTC->BKP28R;
     diag->cmd53_length = RTC->BKP29R;
     diag->cmd53_status = (int32_t)RTC->BKP30R;
-    completed_cmd_pack = RTC->BKP6R;
-    completed_meta_pack = RTC->BKP7R;
+    diag->rx_payload_len = (uint16_t)(RTC->BKP29R & 0xFFFFU);
+    assoc_target_bssid_lo = RTC->BKP6R;
+    assoc_target_bssid_hi = RTC->BKP7R;
+    assoc_target_meta = RTC->BKP20R;
     send_pack = RTC->BKP31R;
     diag->send_flow_control = send_pack & 0xFFU;
     diag->send_tx_seq = (send_pack >> 8U) & 0xFFU;
     diag->send_credit = (send_pack >> 16U) & 0xFFU;
     diag->send_synthetic_credit = (send_pack >> 24U) & 0x01U;
-    diag->completed_ioctl_cmd = completed_cmd_pack & 0xFFFFU;
-    diag->completed_ioctl_status = (int8_t)((completed_cmd_pack >> 16U) & 0xFFU);
-    diag->completed_ioctl_poll = (int8_t)((completed_cmd_pack >> 24U) & 0xFFU);
-    diag->completed_ioctl_kind = completed_meta_pack & 0xFFU;
-    diag->completed_ioctl_iface = (completed_meta_pack >> 8U) & 0xFFU;
-    diag->completed_ioctl_id = (completed_meta_pack >> 16U) & 0xFFFFU;
+    diag->completed_ioctl_cmd = 0U;
+    diag->completed_ioctl_status = 0;
+    diag->completed_ioctl_poll = 0;
+    diag->completed_ioctl_kind = 0U;
+    diag->completed_ioctl_iface = 0U;
+    diag->completed_ioctl_id = 0U;
+    diag->assoc_target_bssid[0] = assoc_target_bssid_lo & 0xFFU;
+    diag->assoc_target_bssid[1] = (assoc_target_bssid_lo >> 8U) & 0xFFU;
+    diag->assoc_target_bssid[2] = (assoc_target_bssid_lo >> 16U) & 0xFFU;
+    diag->assoc_target_bssid[3] = (assoc_target_bssid_lo >> 24U) & 0xFFU;
+    diag->assoc_target_bssid[4] = assoc_target_bssid_hi & 0xFFU;
+    diag->assoc_target_bssid[5] = (assoc_target_bssid_hi >> 8U) & 0xFFU;
+    diag->assoc_target_channel = (assoc_target_bssid_hi >> 16U) & 0xFFU;
+    diag->assoc_target_auth_code = (assoc_target_bssid_hi >> 24U) & 0xFFU;
+    diag->assoc_target_chanspec = assoc_target_meta & 0xFFFFU;
+    diag->assoc_target_5g = (assoc_target_meta >> 16U) & 0x01U;
+    diag->assoc_candidate_index = (assoc_target_meta >> 17U) & 0x7FU;
+    diag->assoc_candidate_count = (assoc_target_meta >> 24U) & 0x7FU;
+    diag->assoc_target_valid = (assoc_target_meta >> 31U) & 0x01U;
 }
 
 void ap6256_cyw43_port_record_breadcrumb(uint32_t stage, int32_t detail)
@@ -1479,6 +1529,7 @@ void ap6256_cyw43_port_record_async_event(uint32_t event_type,
     s_cyw43_last_async_event_status = status;
     s_cyw43_last_async_event_reason = reason;
     s_cyw43_last_async_event_flags = flags;
+    ap6256_cyw43_port_persist_pre_reset_diag(1U);
 }
 
 uint32_t ap6256_cyw43_port_last_async_event_type(void)
@@ -1850,6 +1901,90 @@ void ap6256_cyw43_port_record_control_tx_frame(uint32_t kind,
     }
     s_cyw43_control_tx_diag.checksum = checksum;
     ap6256_cyw43_port_persist_pre_reset_diag(0U);
+}
+
+void ap6256_cyw43_port_record_assoc_target(const uint8_t bssid[6],
+                                           uint16_t channel,
+                                           uint8_t selected_5g,
+                                           uint16_t chanspec,
+                                           uint32_t auth_type,
+                                           uint8_t candidate_index,
+                                           uint8_t candidate_count)
+{
+    if (bssid != NULL) {
+        s_cyw43_assoc_target_valid = 1U;
+        for (uint32_t i = 0U; i < 6U; ++i) {
+            s_cyw43_assoc_target_bssid[i] = bssid[i];
+        }
+    } else {
+        s_cyw43_assoc_target_valid = 0U;
+        memset((void *)s_cyw43_assoc_target_bssid, 0, sizeof(s_cyw43_assoc_target_bssid));
+    }
+    s_cyw43_assoc_target_channel = (uint8_t)((channel <= 255U) ? channel : 0U);
+    s_cyw43_assoc_target_5g = (selected_5g != 0U) ? 1U : 0U;
+    s_cyw43_assoc_target_chanspec = chanspec;
+    s_cyw43_assoc_candidate_index = candidate_index;
+    s_cyw43_assoc_candidate_count = candidate_count;
+    /*
+     * Persist the low auth byte. For CYW43 auth constants this is the useful
+     * wsec/auth selector: 0=open, 2=WPA/TKIP, 4=WPA2/AES, 6=WPA/WPA2 mixed.
+     */
+    s_cyw43_assoc_target_auth_code = (uint8_t)(auth_type & 0xFFU);
+    ap6256_cyw43_port_persist_pre_reset_diag(1U);
+}
+
+void ap6256_cyw43_port_record_rx_frame(uint8_t rx_class,
+                                       uint8_t channel,
+                                       uint16_t sdpcm_len,
+                                       uint16_t payload_len,
+                                       const uint8_t *payload)
+{
+    uint32_t first_word = 0U;
+
+    s_cyw43_last_rx_class = rx_class;
+    s_cyw43_last_rx_channel = channel;
+    s_cyw43_last_rx_sdpcm_len = sdpcm_len;
+    s_cyw43_last_rx_payload_len = payload_len;
+
+    if (payload != NULL) {
+        first_word = payload[0];
+        if (payload_len > 1U) {
+            first_word |= ((uint32_t)payload[1] << 8U);
+        }
+        if (payload_len > 2U) {
+            first_word |= ((uint32_t)payload[2] << 16U);
+        }
+        if (payload_len > 3U) {
+            first_word |= ((uint32_t)payload[3] << 24U);
+        }
+    }
+    s_cyw43_last_rx_first_word = first_word;
+    ap6256_cyw43_port_persist_pre_reset_diag(0U);
+}
+
+uint8_t ap6256_cyw43_port_last_rx_class(void)
+{
+    return s_cyw43_last_rx_class;
+}
+
+uint8_t ap6256_cyw43_port_last_rx_channel(void)
+{
+    return s_cyw43_last_rx_channel;
+}
+
+uint16_t ap6256_cyw43_port_last_rx_sdpcm_len(void)
+{
+    return s_cyw43_last_rx_sdpcm_len;
+}
+
+uint16_t ap6256_cyw43_port_last_rx_payload_len(void)
+{
+    return s_cyw43_last_rx_payload_len;
+}
+
+uint32_t ap6256_cyw43_port_last_rx_first_word(void)
+{
+    return s_cyw43_last_rx_first_word;
 }
 
 void ap6256_cyw43_port_get_control_tx_diag(ap6256_cyw43_control_tx_diag_t *diag)

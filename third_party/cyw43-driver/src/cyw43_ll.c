@@ -75,6 +75,9 @@ extern bool enable_spi_packet_dumping;
 #ifndef AP6256_CYW43_ENABLE_SYNTHETIC_CONTROL_CREDIT
 #define AP6256_CYW43_ENABLE_SYNTHETIC_CONTROL_CREDIT (0)
 #endif
+#ifndef AP6256_CYW43_SAFE_5G_FEM_NVRAM
+#define AP6256_CYW43_SAFE_5G_FEM_NVRAM (1)
+#endif
 
 #define ALIGN_UINT(val, align) (((val) + (align) - 1) & ~((align) - 1))
 
@@ -262,6 +265,45 @@ static uint16_t ap6256_join_chanspec(uint32_t channel)
     return AP6256_CHSPEC_20MHZ(channel);
 }
 
+static uint8_t ap6256_join_channel_is_5g(uint32_t channel)
+{
+    if ((channel == CYW43_CHANNEL_NONE) || (channel == 0U)) {
+        return 0U;
+    }
+    if ((channel & CYW43_CHANNEL_CHANSPEC_FLAG) != 0U) {
+        return (((uint16_t)(channel & 0xffffU) & AP6256_CHSPEC_D11AC_BND_5G) != 0U) ? 1U : 0U;
+    }
+    return (channel > AP6256_CH_MAX_2G_CHANNEL) ? 1U : 0U;
+}
+
+static size_t __attribute__((unused)) ap6256_build_join_pref_5g(uint8_t *buf, size_t buf_len)
+{
+    const uint8_t BRCMF_JOIN_PREF_RSSI = 1U;
+    const uint8_t BRCMF_JOIN_PREF_BAND = 3U;
+    const uint8_t WLC_BAND_5G = 1U;
+
+    if ((buf == NULL) || (buf_len < 8U)) {
+        return 0U;
+    }
+
+    /*
+     * brcmfmac sets join_pref before association when cfg80211 asks for band
+     * preference. Keep this as a hidden diagnostic path only; normal AP6256
+     * joins use directed brcmf_join_params and prove success by control
+     * completion or association/link events.
+     */
+    memset(buf, 0, 8U);
+    buf[0] = BRCMF_JOIN_PREF_BAND;
+    buf[1] = 2U;
+    buf[2] = 0U;
+    buf[3] = WLC_BAND_5G;
+    buf[4] = BRCMF_JOIN_PREF_RSSI;
+    buf[5] = 2U;
+    buf[6] = 0U;
+    buf[7] = 0U;
+    return 8U;
+}
+
 static size_t ap6256_build_brcmf_join_params(uint8_t *buf,
                                              size_t buf_len,
                                              size_t ssid_len,
@@ -297,12 +339,12 @@ static size_t ap6256_build_brcmf_join_params(uint8_t *buf,
     return payload_len;
 }
 
-static size_t ap6256_build_brcmf_ext_join_params(uint8_t *buf,
-                                                 size_t buf_len,
-                                                 size_t ssid_len,
-                                                 const uint8_t *ssid,
-                                                 const uint8_t *bssid,
-                                                 uint32_t channel)
+static size_t __attribute__((unused)) ap6256_build_brcmf_ext_join_params(uint8_t *buf,
+                                                                         size_t buf_len,
+                                                                         size_t ssid_len,
+                                                                         const uint8_t *ssid,
+                                                                         const uint8_t *bssid,
+                                                                         uint32_t channel)
 {
     const size_t assoc_offset = AP6256_BRCMF_EXT_JOIN_ASSOC_OFFSET;
     const uint32_t default_scan = 0xFFFFFFFFUL;
@@ -384,6 +426,7 @@ static size_t ap6256_build_brcmf_ext_join_params(uint8_t *buf,
 #define WLC_GET_SSID (25)
 #define WLC_SET_SSID (26)
 #define WLC_SET_CHANNEL (30)
+#define WLC_SCAN (50)
 #define WLC_DISASSOC (52)
 #define WLC_GET_ANTDIV (63)
 #define WLC_SET_ANTDIV (64)
@@ -471,7 +514,48 @@ static size_t ap6256_build_brcmf_ext_join_params(uint8_t *buf,
 #define AP6256_CYW43_IOCTL_NO_PACKET_RECOVERY_LOOPS (64U)
 #define AP6256_CYW43_IOCTL_NO_PACKET_BUDGET_LOOPS   (1200U)
 #define AP6256_CYW43_ESCAN_NO_PACKET_BUDGET_LOOPS   (80U)
-#define AP6256_CYW43_ASSOC_RESPONSE_WINDOW_US       (7000000U)
+#define AP6256_CYW43_ASSOC_NO_PACKET_BUDGET_LOOPS   (3000U)
+#define AP6256_CYW43_JOIN_SETUP_NO_PACKET_BUDGET_LOOPS (40U)
+#define AP6256_CYW43_ASSOC_RESPONSE_WINDOW_US       (3000000U)
+#define AP6256_CYW43_JOIN_SETUP_RESPONSE_WINDOW_US  (250000U)
+#define AP6256_CYW43_WL_TXPWR_OVERRIDE              (0x80000000U)
+/*
+ * Keep the brcmfmac-style directed association payload available in normal
+ * runtime. A previous RTT automation issue made several runs look like command
+ * failures when the console input was actually corrupted; the production path
+ * should be evidence-based rather than SSID-only shortcuts.
+ */
+#ifndef AP6256_CYW43_DIRECTED_ASSOC_PAYLOAD
+#define AP6256_CYW43_DIRECTED_ASSOC_PAYLOAD          (1U)
+#endif
+
+#ifndef AP6256_CYW43_ENABLE_JOIN_PREF
+#define AP6256_CYW43_ENABLE_JOIN_PREF                (1U)
+#endif
+
+#ifndef AP6256_CYW43_USE_EXT_JOIN_IOVAR
+#define AP6256_CYW43_USE_EXT_JOIN_IOVAR              (0U)
+#endif
+
+#ifndef AP6256_CYW43_5G_JOIN_IOVAR_ONLY
+#define AP6256_CYW43_5G_JOIN_IOVAR_ONLY              (0U)
+#endif
+
+#ifndef AP6256_CYW43_5G_JOIN_QTXPOWER_QDBM
+#define AP6256_CYW43_5G_JOIN_QTXPOWER_QDBM           (8U)
+#endif
+
+#ifndef AP6256_CYW43_5G_JOIN_SAFE_VHT_OFF
+#define AP6256_CYW43_5G_JOIN_SAFE_VHT_OFF            (1U)
+#endif
+
+#ifndef AP6256_CYW43_5G_JOIN_SET_CHANNEL_STARTER
+#define AP6256_CYW43_5G_JOIN_SET_CHANNEL_STARTER     (1U)
+#endif
+
+#ifndef AP6256_CYW43_ABORT_SCAN_BEFORE_JOIN
+#define AP6256_CYW43_ABORT_SCAN_BEFORE_JOIN          (1U)
+#endif
 
 // Errors generated by sdpcm_process_rx_packet.
 #define CYW43_ERROR_WRONG_PAYLOAD_TYPE (-9)
@@ -496,17 +580,6 @@ static size_t ap6256_build_brcmf_ext_join_params(uint8_t *buf,
 #define AP6256_WIFI_JOIN_STATE_LINK      (0x0400U)
 #define AP6256_WIFI_JOIN_STATE_KEYED     (0x0800U)
 
-static const uint8_t ap6256_wpa2_psk_ccmp_rsn_ie[] = {
-    0x30, 0x14,                         // RSN element, 20-byte body
-    0x01, 0x00,                         // version 1
-    0x00, 0x0f, 0xac, 0x04,             // group cipher: CCMP
-    0x01, 0x00,                         // one pairwise cipher
-    0x00, 0x0f, 0xac, 0x04,             // pairwise cipher: CCMP
-    0x01, 0x00,                         // one AKM
-    0x00, 0x0f, 0xac, 0x02,             // AKM: PSK
-    0x00, 0x00,                         // RSN capabilities
-};
-
 // Max password length
 #define CYW43_WPA_MAX_PASSWORD_LEN 64
 #define CYW43_WPA_SAE_MAX_PASSWORD_LEN 128
@@ -519,14 +592,54 @@ static uint32_t s_ap6256_pending_ioctl_cmd;
 static uint32_t s_ap6256_pending_ioctl_iface;
 static uint32_t s_ap6256_pending_ioctl_kind;
 static bool s_ap6256_pending_ioctl_association_trigger;
+static uint16_t s_ap6256_scan_sync_id;
+static uint8_t s_ap6256_scan_active;
 
 static bool ap6256_join_no_response_ok(int ret) {
     return (ret != 0) &&
            (ap6256_cyw43_port_last_ioctl_phase() == AP6256_CYW43_IOCTL_PHASE_WAIT_NO_PACKET);
 }
 
+static int ap6256_program_wpa2_psk_assoc_ie(cyw43_int_t *self, uint32_t wpa_auth) {
+    /*
+     * brcmfmac programs the RSN/WPA IE before association so firmware knows the
+     * exact AKM/cipher set requested by cfg80211. This matters on WPA2/WPA3
+     * transition APs: advertise a WPA2-PSK/CCMP association IE without PMF so
+     * the dongle does not attempt the unproven SAE/PMF external-auth path just
+     * because the BSS advertises it. Linux brcmfmac only enables MFP from the
+     * supplicant-provided IE and feature policy; this MCU path has no external
+     * SAE/PMF supplicant, so WPA2-PSK must stay strictly WPA2 here.
+     */
+    static const uint8_t rsn_wpa2_psk_ccmp[] = {
+        0x30, 0x14,             /* RSN IE, length 20 */
+        0x01, 0x00,             /* version */
+        0x00, 0x0f, 0xac, 0x04, /* group cipher: CCMP */
+        0x01, 0x00,             /* pairwise cipher count */
+        0x00, 0x0f, 0xac, 0x04, /* pairwise cipher: CCMP */
+        0x01, 0x00,             /* AKM count */
+        0x00, 0x0f, 0xac, 0x02, /* AKM: PSK */
+        0x00, 0x00              /* RSN caps: no PMF */
+    };
+    int ret;
+
+    if (((wpa_auth & CYW43_WPA2_AUTH_PSK) == 0U) ||
+        ((wpa_auth & CYW43_WPA3_AUTH_SAE_PSK) != 0U)) {
+        return 0;
+    }
+
+    ret = cyw43_write_iovar_n(self,
+                              "wpaie",
+                              sizeof(rsn_wpa2_psk_ccmp),
+                              rsn_wpa2_psk_ccmp,
+                              WWD_STA_INTERFACE);
+    if ((ret != 0) && ap6256_join_no_response_ok(ret)) {
+        ret = 0;
+    }
+    return ret;
+}
+
 static bool ap6256_ioctl_is_association_trigger(uint32_t kind, uint32_t cmd) {
-    return (kind == SDPCM_SET) && (cmd == WLC_SET_SSID);
+    return (kind == SDPCM_SET) && ((cmd == WLC_SET_SSID) || (cmd == WLC_DISASSOC));
 }
 
 static bool ap6256_ioctl_is_join_iovar(uint32_t kind, uint32_t cmd, size_t len, const uint8_t *buf) {
@@ -534,6 +647,56 @@ static bool ap6256_ioctl_is_join_iovar(uint32_t kind, uint32_t cmd, size_t len, 
         return false;
     }
     return memcmp(buf, "join", 5U) == 0;
+}
+
+static bool ap6256_iovar_name_is(const uint8_t *buf, size_t len, const char *name) {
+    size_t name_len = strlen(name) + 1U;
+
+    return (buf != NULL) && (len >= name_len) && (memcmp(buf, name, name_len) == 0);
+}
+
+static bool ap6256_ioctl_is_join_setup(uint32_t kind, uint32_t cmd, size_t len, const uint8_t *buf) {
+    if (kind != SDPCM_SET) {
+        return false;
+    }
+
+    switch (cmd) {
+    case WLC_SET_WSEC:
+    case WLC_SET_WSEC_PMK:
+    case WLC_SET_INFRA:
+    case WLC_SET_AUTH:
+    case WLC_SET_WPA_AUTH:
+    case WLC_SET_CHANNEL:
+        return true;
+    default:
+        break;
+    }
+
+    if ((cmd != WLC_SET_VAR) || (buf == NULL)) {
+        return false;
+    }
+
+    return ap6256_iovar_name_is(buf, len, "wpaie") ||
+           ap6256_iovar_name_is(buf, len, "sup_wpa") ||
+           ap6256_iovar_name_is(buf, len, "sup_wpa2_eapver") ||
+           ap6256_iovar_name_is(buf, len, "sup_wpa_tmo") ||
+           ap6256_iovar_name_is(buf, len, "sae_password") ||
+           ap6256_iovar_name_is(buf, len, "auth") ||
+           ap6256_iovar_name_is(buf, len, "mfp") ||
+           ap6256_iovar_name_is(buf, len, "wpa_auth") ||
+           ap6256_iovar_name_is(buf, len, "join_pref") ||
+           ap6256_iovar_name_is(buf, len, "qtxpower") ||
+           ap6256_iovar_name_is(buf, len, "mpc") ||
+           ap6256_iovar_name_is(buf, len, "roam_off") ||
+           ap6256_iovar_name_is(buf, len, "ampdu") ||
+           ap6256_iovar_name_is(buf, len, "amsdu") ||
+           ap6256_iovar_name_is(buf, len, "ampdu_ba_wsize") ||
+           ap6256_iovar_name_is(buf, len, "ampdu_mpdu") ||
+           ap6256_iovar_name_is(buf, len, "ampdu_rx_factor") ||
+           ap6256_iovar_name_is(buf, len, "frameburst") ||
+           ap6256_iovar_name_is(buf, len, "nmode") ||
+           ap6256_iovar_name_is(buf, len, "vhtmode") ||
+           ap6256_iovar_name_is(buf, len, "mimo_bw_cap");
 }
 
 static bool ap6256_join_event_proves_started(void) {
@@ -697,6 +860,43 @@ static int cyw43_check_valid_chipset_firmware(cyw43_int_t *self, size_t len, uin
     return CYW43_FAIL_FAST_CHECK(-CYW43_EIO);
 }
 
+#if AP6256_CYW43_SAFE_5G_FEM_NVRAM
+typedef struct {
+    const char *key;
+    const char *line;
+} ap6256_nvram_override_t;
+
+static const ap6256_nvram_override_t ap6256_safe_5g_fem_overrides[] = {
+    /*
+     * The AP6256 reference NVRAM drives an external 5 GHz PA/switch map. On
+     * this board 2.4 GHz is stable, but every 5 GHz association attempt causes
+     * an external reset immediately after the firmware starts RF activity. Use
+     * a low-power/internal-path 5 GHz profile while we prove the RF-control
+     * wiring; this mirrors brcmfmac's model of treating NVRAM board data as
+     * the source of truth rather than patching join/control packets.
+     */
+    { "extpagain5g", "extpagain5g=0" },
+    { "swctrlmap_5g", "swctrlmap_5g=0x00000000,0x00000000,0x00000000,0x000000,0x000" },
+    { "swctrlmapext_5g", "swctrlmapext_5g=0x00000000,0x00000000,0x00000000,0x000000,0x000" },
+    { "maxp5ga0", "maxp5ga0=20,20,20,20" },
+};
+
+static const char *ap6256_nvram_override_for_entry(const uint8_t *entry, size_t entry_len) {
+    for (size_t i = 0U; i < (sizeof(ap6256_safe_5g_fem_overrides) / sizeof(ap6256_safe_5g_fem_overrides[0])); ++i) {
+        const char *key = ap6256_safe_5g_fem_overrides[i].key;
+        size_t key_len = strlen(key);
+
+        if ((entry_len > key_len) &&
+            (entry[key_len] == '=') &&
+            (memcmp(entry, key, key_len) == 0)) {
+            return ap6256_safe_5g_fem_overrides[i].line;
+        }
+    }
+
+    return NULL;
+}
+#endif
+
 static size_t ap6256_prepare_nvram_blob(const uint8_t *src, size_t src_len, uint8_t *dst, size_t dst_len) {
     size_t src_i;
     size_t dst_i;
@@ -749,13 +949,22 @@ static size_t ap6256_prepare_nvram_blob(const uint8_t *src, size_t src_len, uint
         }
 
         if ((trimmed_start < trimmed_end) && (src[trimmed_start] != '#')) {
+            const uint8_t *line = &src[trimmed_start];
             size_t line_len = trimmed_end - trimmed_start;
+#if AP6256_CYW43_SAFE_5G_FEM_NVRAM
+            const char *override_line = ap6256_nvram_override_for_entry(line, line_len);
+
+            if (override_line != NULL) {
+                line = (const uint8_t *)override_line;
+                line_len = strlen(override_line);
+            }
+#endif
 
             if ((dst_i + line_len + 1U) >= dst_len) {
                 return 0U;
             }
 
-            memcpy(&dst[dst_i], &src[trimmed_start], line_len);
+            memcpy(&dst[dst_i], line, line_len);
             dst_i += line_len;
             dst[dst_i++] = '\0';
         }
@@ -1189,6 +1398,15 @@ static cyw43_async_event_t *cyw43_ll_parse_async_event(size_t len, uint8_t *buf)
             return ev;
         }
         cyw43_ll_wifi_parse_scan_result(ev);
+    } else if ((ev->event_type == CYW43_EV_ESCAN_RESULT) &&
+               (ev->status != CYW43_STATUS_PARTIAL)) {
+        /*
+         * Track firmware scan lifetime separately from the monotonically
+         * increasing sync id. The sync id remains useful for diagnostics and
+         * future scans, but a completed/aborted ESCAN must not make the join
+         * path send another abort immediately before WLC_SET_SSID.
+         */
+        s_ap6256_scan_active = 0U;
     }
 
     return ev;
@@ -1400,6 +1618,7 @@ static const char *ioctl_cmd_name(int id) {
         CASE_RETURN_STRING(WLC_GET_SSID)
         CASE_RETURN_STRING(WLC_SET_SSID)
         CASE_RETURN_STRING(WLC_SET_CHANNEL)
+        CASE_RETURN_STRING(WLC_SCAN)
         CASE_RETURN_STRING(WLC_DISASSOC)
         CASE_RETURN_STRING(WLC_GET_ANTDIV)
         CASE_RETURN_STRING(WLC_SET_ANTDIV)
@@ -1500,11 +1719,21 @@ static int sdpcm_process_rx_packet(cyw43_int_t *self, uint8_t *buf, size_t *out_
     if (header->size != (~header->size_com & 0xffff)) {
         // invalid packet, just ignore it
         CYW43_DEBUG("Ignoring invalid packet\n");
+        ap6256_cyw43_port_record_rx_frame(AP6256_CYW43_RX_CLASS_MALFORMED,
+                                          header->channel_and_flags & 0x0f,
+                                          header->size,
+                                          0U,
+                                          buf);
         return -2;
     }
     if (header->size < SDPCM_HEADER_LEN) {
         // packet too small, just ignore it
         CYW43_DEBUG("Ignoring too small packet\n");
+        ap6256_cyw43_port_record_rx_frame(AP6256_CYW43_RX_CLASS_MALFORMED,
+                                          header->channel_and_flags & 0x0f,
+                                          header->size,
+                                          0U,
+                                          buf);
         return -3;
     }
     if ((header->size > sizeof(self->spid_buf)) ||
@@ -1513,6 +1742,11 @@ static int sdpcm_process_rx_packet(cyw43_int_t *self, uint8_t *buf, size_t *out_
         CYW43_DEBUG("Ignoring malformed SDPCM packet size=%u header_len=%u\n",
                     (unsigned int)header->size,
                     (unsigned int)header->header_length);
+        ap6256_cyw43_port_record_rx_frame(AP6256_CYW43_RX_CLASS_MALFORMED,
+                                          header->channel_and_flags & 0x0f,
+                                          header->size,
+                                          0U,
+                                          buf);
         return -3;
     }
 
@@ -1536,6 +1770,11 @@ static int sdpcm_process_rx_packet(cyw43_int_t *self, uint8_t *buf, size_t *out_
     if (header->size == SDPCM_HEADER_LEN) {
         // flow control packet with no data
         CYW43_DEBUG("Ignoring flow control packet\n");
+        ap6256_cyw43_port_record_rx_frame(AP6256_CYW43_RX_CLASS_NONE,
+                                          header->channel_and_flags & 0x0f,
+                                          header->size,
+                                          0U,
+                                          buf);
         return -4;
     }
 
@@ -1544,11 +1783,21 @@ static int sdpcm_process_rx_packet(cyw43_int_t *self, uint8_t *buf, size_t *out_
             if (header->size < SDPCM_HEADER_LEN + IOCTL_HEADER_LEN) {
                 // packet too small, just ignore it
                 CYW43_DEBUG("Ignoring too small control packet\n");
+                ap6256_cyw43_port_record_rx_frame(AP6256_CYW43_RX_CLASS_RUNT,
+                                                  CONTROL_HEADER,
+                                                  header->size,
+                                                  0U,
+                                                  buf);
                 return -5;
             }
             const struct ioctl_header_t *ioctl_header = (const void *)&buf[header->header_length];
             if (((const uint8_t *)ioctl_header + IOCTL_HEADER_LEN) > ((const uint8_t *)header + header->size)) {
                 CYW43_DEBUG("Ignoring malformed control packet\n");
+                ap6256_cyw43_port_record_rx_frame(AP6256_CYW43_RX_CLASS_MALFORMED,
+                                                  CONTROL_HEADER,
+                                                  header->size,
+                                                  0U,
+                                                  buf);
                 return -5;
             }
 
@@ -1589,6 +1838,11 @@ static int sdpcm_process_rx_packet(cyw43_int_t *self, uint8_t *buf, size_t *out_
             #pragma GCC diagnostic pop
             *out_len = len;
             *out_buf = payload;
+            ap6256_cyw43_port_record_rx_frame(AP6256_CYW43_RX_CLASS_CONTROL,
+                                              CONTROL_HEADER,
+                                              header->size,
+                                              (uint16_t)MIN(len, 0xffffU),
+                                              payload);
             CYW43_VDEBUG("got ioctl response id=0x%x len=%d\n", id, len);
             return CONTROL_HEADER;
         }
@@ -1596,12 +1850,22 @@ static int sdpcm_process_rx_packet(cyw43_int_t *self, uint8_t *buf, size_t *out_
             if (header->size <= SDPCM_HEADER_LEN + BDC_HEADER_LEN) {
                 // packet too small, just ignore it
                 CYW43_DEBUG("Ignoring too small data packet\n");
+                ap6256_cyw43_port_record_rx_frame(AP6256_CYW43_RX_CLASS_RUNT,
+                                                  DATA_HEADER,
+                                                  header->size,
+                                                  0U,
+                                                  buf);
                 return -7;
             }
             // get bdc header
             const struct sdpcm_bdc_header_t *bdc_header = (const void *)&buf[header->header_length];
             if (((const uint8_t *)bdc_header + BDC_HEADER_LEN) > ((const uint8_t *)header + header->size)) {
                 CYW43_DEBUG("Ignoring malformed data packet\n");
+                ap6256_cyw43_port_record_rx_frame(AP6256_CYW43_RX_CLASS_MALFORMED,
+                                                  DATA_HEADER,
+                                                  header->size,
+                                                  0U,
+                                                  buf);
                 return -7;
             }
             // get the interface number
@@ -1612,26 +1876,62 @@ static int sdpcm_process_rx_packet(cyw43_int_t *self, uint8_t *buf, size_t *out_
             uint8_t *payload = (uint8_t *)bdc_header + BDC_HEADER_LEN + (bdc_header->data_offset << 2);
             if (payload > ((uint8_t *)header + header->size)) {
                 CYW43_DEBUG("Ignoring malformed data payload\n");
+                ap6256_cyw43_port_record_rx_frame(AP6256_CYW43_RX_CLASS_MALFORMED,
+                                                  DATA_HEADER,
+                                                  header->size,
+                                                  0U,
+                                                  buf);
                 return -7;
             }
             size_t len = header->size - ((const uint8_t *)payload - (const uint8_t *)header);
             #pragma GCC diagnostic pop
 
+            if (len < 42U) {
+                /*
+                 * Drop runt Ethernet payloads before they reach lwIP. ARP is
+                 * 42 bytes without FCS; DHCP/EAPOL are larger. A shorter frame
+                 * after association is malformed host input, and brcmfmac does
+                 * not pass such packets up as valid netdev RX.
+                 */
+                CYW43_DEBUG("Ignoring runt data payload len=%u\n", (unsigned int)len);
+                ap6256_cyw43_port_record_rx_frame(AP6256_CYW43_RX_CLASS_RUNT,
+                                                  DATA_HEADER,
+                                                  header->size,
+                                                  (uint16_t)MIN(len, 0xffffU),
+                                                  payload);
+                return -7;
+            }
+
             // at this point we have just the payload, ready to process
             *out_len = len | (uint32_t)itf << 31;
             *out_buf = payload;
+            ap6256_cyw43_port_record_rx_frame(AP6256_CYW43_RX_CLASS_DATA,
+                                              DATA_HEADER,
+                                              header->size,
+                                              (uint16_t)MIN(len, 0xffffU),
+                                              payload);
             return DATA_HEADER;
         }
         case ASYNCEVENT_HEADER: {
             if (header->size <= SDPCM_HEADER_LEN + BDC_HEADER_LEN) {
                 // packet too small, just ignore it
                 CYW43_DEBUG("Ignoring too small async packet\n");
+                ap6256_cyw43_port_record_rx_frame(AP6256_CYW43_RX_CLASS_RUNT,
+                                                  ASYNCEVENT_HEADER,
+                                                  header->size,
+                                                  0U,
+                                                  buf);
                 return -8;
             }
             // get bdc header
             const struct sdpcm_bdc_header_t *bdc_header = (const void *)&buf[header->header_length];
             if (((const uint8_t *)bdc_header + BDC_HEADER_LEN) > ((const uint8_t *)header + header->size)) {
                 CYW43_DEBUG("Ignoring malformed async packet\n");
+                ap6256_cyw43_port_record_rx_frame(AP6256_CYW43_RX_CLASS_MALFORMED,
+                                                  ASYNCEVENT_HEADER,
+                                                  header->size,
+                                                  0U,
+                                                  buf);
                 return -8;
             }
             // get payload (skip variable length header)
@@ -1640,6 +1940,11 @@ static int sdpcm_process_rx_packet(cyw43_int_t *self, uint8_t *buf, size_t *out_
             uint8_t *payload = (uint8_t *)bdc_header + BDC_HEADER_LEN + (bdc_header->data_offset << 2);
             if (payload > ((uint8_t *)header + header->size)) {
                 CYW43_DEBUG("Ignoring malformed async payload\n");
+                ap6256_cyw43_port_record_rx_frame(AP6256_CYW43_RX_CLASS_MALFORMED,
+                                                  ASYNCEVENT_HEADER,
+                                                  header->size,
+                                                  0U,
+                                                  buf);
                 return -8;
             }
             size_t len = header->size - ((const uint8_t *)payload - (const uint8_t *)header);
@@ -1647,6 +1952,11 @@ static int sdpcm_process_rx_packet(cyw43_int_t *self, uint8_t *buf, size_t *out_
 
             if (len < 24U) {
                 CYW43_DEBUG("Ignoring too small async ethernet event\n");
+                ap6256_cyw43_port_record_rx_frame(AP6256_CYW43_RX_CLASS_RUNT,
+                                                  ASYNCEVENT_HEADER,
+                                                  header->size,
+                                                  (uint16_t)MIN(len, 0xffffU),
+                                                  payload);
                 return -8;
             }
 
@@ -1655,6 +1965,11 @@ static int sdpcm_process_rx_packet(cyw43_int_t *self, uint8_t *buf, size_t *out_
                 // ethernet packet doesn't have the correct type
                 // Note - this happens during startup but appears to be expected
                 CYW43_VDEBUG("wrong payload type 0x%02x 0x%02x\n", payload[12], payload[13]);
+                ap6256_cyw43_port_record_rx_frame(AP6256_CYW43_RX_CLASS_UNSUPPORTED,
+                                                  ASYNCEVENT_HEADER,
+                                                  header->size,
+                                                  (uint16_t)MIN(len, 0xffffU),
+                                                  payload);
                 return CYW43_ERROR_WRONG_PAYLOAD_TYPE;
             }
 
@@ -1662,12 +1977,22 @@ static int sdpcm_process_rx_packet(cyw43_int_t *self, uint8_t *buf, size_t *out_
             if (!(payload[19] == 0x00 && payload[20] == 0x10 && payload[21] == 0x18)) {
                 // incorrect OUI
                 CYW43_DEBUG("incorrect oui\n");
+                ap6256_cyw43_port_record_rx_frame(AP6256_CYW43_RX_CLASS_UNSUPPORTED,
+                                                  ASYNCEVENT_HEADER,
+                                                  header->size,
+                                                  (uint16_t)MIN(len, 0xffffU),
+                                                  payload);
                 return -10;
             }
 
             // const struct wwd_event_header_t *event = (const void*)&payload[24];
             *out_len = len - 24;
             *out_buf = payload + 24;
+            ap6256_cyw43_port_record_rx_frame(AP6256_CYW43_RX_CLASS_ASYNC,
+                                              ASYNCEVENT_HEADER,
+                                              header->size,
+                                              (uint16_t)MIN(len - 24U, 0xffffU),
+                                              payload + 24);
 
             CYW43_VDEBUG("async header header size=%d header length=%d out_len=%d\n", header->size, header->header_length, *out_len);
             return ASYNCEVENT_HEADER;
@@ -1675,6 +2000,11 @@ static int sdpcm_process_rx_packet(cyw43_int_t *self, uint8_t *buf, size_t *out_
         default: {
             // unknown header, just ignore it
             CYW43_DEBUG("unknown header\n");
+            ap6256_cyw43_port_record_rx_frame(AP6256_CYW43_RX_CLASS_UNSUPPORTED,
+                                              header->channel_and_flags & 0x0f,
+                                              header->size,
+                                              0U,
+                                              buf);
             return -11;
         }
     }
@@ -2046,6 +2376,7 @@ static bool ap6256_ioctl_is_escan_start(uint32_t kind, uint32_t cmd, size_t len,
 static int cyw43_do_ioctl(cyw43_int_t *self, uint32_t kind, uint32_t cmd, size_t len, uint8_t *buf, uint32_t iface) {
     const bool allow_scan_resend = ap6256_ioctl_is_escan_start(kind, cmd, len, buf);
     const bool is_join_iovar = ap6256_ioctl_is_join_iovar(kind, cmd, len, buf);
+    const bool is_join_setup = ap6256_ioctl_is_join_setup(kind, cmd, len, buf);
     uint8_t recovery_attempted = 0U;
     uint8_t forced_probe_attempted = 0U;
     uint8_t forced_probe_pending = 0U;
@@ -2056,7 +2387,9 @@ static int cyw43_do_ioctl(cyw43_int_t *self, uint32_t kind, uint32_t cmd, size_t
     int ret;
     const bool is_association_trigger = ap6256_ioctl_is_association_trigger(kind, cmd) ||
         is_join_iovar;
-    uint32_t ioctl_wait_timeout_us = is_association_trigger
+    uint32_t ioctl_wait_timeout_us = is_join_setup
+        ? AP6256_CYW43_JOIN_SETUP_RESPONSE_WINDOW_US
+        : is_association_trigger
         ? AP6256_CYW43_ASSOC_RESPONSE_WINDOW_US
         : CYW43_IOCTL_TIMEOUT_US;
 
@@ -2091,6 +2424,18 @@ static int cyw43_do_ioctl(cyw43_int_t *self, uint32_t kind, uint32_t cmd, size_t
                                        ret,
                                        ret);
         return ret;
+    }
+
+    /*
+     * A previous successful packet only proves the last F2 read was legal. It
+     * must not authorize arbitrary control waits, so normal ioctls re-check
+     * interrupt/mailbox state before completion reads. Association is different
+     * on this AP6256 path: firmware often suppresses the sync response and the
+     * useful evidence is subsequent event/data traffic. Preserve the post-TX
+     * poll runway for WLC_SET_SSID/join so DHCP RX is not starved.
+     */
+    if (!is_association_trigger) {
+        self->had_successful_packet = false;
     }
 
     start = cyw43_hal_ticks_us();
@@ -2155,6 +2500,9 @@ static int cyw43_do_ioctl(cyw43_int_t *self, uint32_t kind, uint32_t cmd, size_t
                                            self->wwd_sdpcm_requested_ioctl_id,
                                            0,
                                            last_poll);
+            if (is_association_trigger) {
+                self->had_successful_packet = true;
+            }
             return 0;
         } else if (ret == ASYNCEVENT_HEADER) {
             cyw43_async_event_t *ev = cyw43_ll_parse_async_event(res_len, res_buf);
@@ -2174,6 +2522,7 @@ static int cyw43_do_ioctl(cyw43_int_t *self, uint32_t kind, uint32_t cmd, size_t
                                                self->wwd_sdpcm_requested_ioctl_id,
                                                0,
                                                last_poll);
+                self->had_successful_packet = true;
                 return 0;
             }
         } else if (ret == DATA_HEADER) {
@@ -2190,7 +2539,19 @@ static int cyw43_do_ioctl(cyw43_int_t *self, uint32_t kind, uint32_t cmd, size_t
                 break;
             }
 
-            if ((recovery_attempted == 0U) &&
+            if (is_association_trigger &&
+                (no_packet_loops >= AP6256_CYW43_ASSOC_NO_PACKET_BUDGET_LOOPS)) {
+                break;
+            }
+
+            if (is_join_setup &&
+                (no_packet_loops >= AP6256_CYW43_JOIN_SETUP_NO_PACKET_BUDGET_LOOPS)) {
+                break;
+            }
+
+            if (!is_association_trigger &&
+                !is_join_setup &&
+                (recovery_attempted == 0U) &&
                 (no_packet_loops >= AP6256_CYW43_IOCTL_NO_PACKET_RECOVERY_LOOPS)) {
                 int wake_ret;
 
@@ -2228,6 +2589,7 @@ static int cyw43_do_ioctl(cyw43_int_t *self, uint32_t kind, uint32_t cmd, size_t
             }
 
             if (!is_association_trigger &&
+                !is_join_setup &&
                 (no_packet_loops >= AP6256_CYW43_IOCTL_NO_PACKET_BUDGET_LOOPS)) {
                 break;
             }
@@ -2269,6 +2631,49 @@ static int cyw43_do_ioctl(cyw43_int_t *self, uint32_t kind, uint32_t cmd, size_t
                                        1,
                                        last_poll);
         return 0;
+    }
+
+    /*
+     * Association start must be evidence based. The AP6256 5 GHz reset was
+     * reproduced when WLC_SET_SSID/join was marked accepted after TX-only
+     * completion, then the runtime waited for events that never became a stable
+     * link. Match brcmfmac's control contract here: association succeeds only
+     * after a matching BCDC completion or a valid AUTH/ASSOC/LINK/PSK event
+     * observed in the wait loop above. Otherwise return a bounded, classified
+     * no-packet timeout so the caller can unwind before the board-reset window.
+     */
+    if (is_association_trigger &&
+        (last_poll == -1)) {
+        ap6256_cyw43_port_set_ioctl_phase(AP6256_CYW43_IOCTL_PHASE_WAIT_NO_PACKET);
+        ap6256_cyw43_port_finish_ioctl(-CYW43_ETIMEDOUT, last_poll);
+        ap6256_cyw43_port_set_ioctl_attempt_flags(recovery_attempted,
+                                                  forced_probe_attempted,
+                                                  0U);
+        ap6256_cyw43_port_record_ioctl(kind,
+                                       cmd,
+                                       iface,
+                                       (uint32_t)len,
+                                       self->wwd_sdpcm_requested_ioctl_id,
+                                       -CYW43_ETIMEDOUT,
+                                       last_poll);
+        return CYW43_FAIL_FAST_CHECK(-CYW43_ETIMEDOUT);
+    }
+
+    if (is_join_setup &&
+        (last_poll == -1)) {
+        ap6256_cyw43_port_set_ioctl_phase(AP6256_CYW43_IOCTL_PHASE_WAIT_NO_PACKET);
+        ap6256_cyw43_port_finish_ioctl(-CYW43_ETIMEDOUT, last_poll);
+        ap6256_cyw43_port_set_ioctl_attempt_flags(recovery_attempted,
+                                                  forced_probe_attempted,
+                                                  0U);
+        ap6256_cyw43_port_record_ioctl(kind,
+                                       cmd,
+                                       iface,
+                                       (uint32_t)len,
+                                       self->wwd_sdpcm_requested_ioctl_id,
+                                       -CYW43_ETIMEDOUT,
+                                       last_poll);
+        return CYW43_FAIL_FAST_CHECK(-CYW43_ETIMEDOUT);
     }
 
     CYW43_WARN("do_ioctl(%u, %u, %u): timeout\n", (unsigned int)kind, (unsigned int)cmd, (unsigned int)len);
@@ -3080,6 +3485,8 @@ int cyw43_ll_bus_init(cyw43_ll_t *self_in, const uint8_t *mac) {
 
     memset(&compat_desc, 0, sizeof(compat_desc));
     s_ap6256_boot_descriptor = compat_desc;
+    s_ap6256_scan_sync_id = 0U;
+    s_ap6256_scan_active = 0U;
     self->startup_t0 = cyw43_hal_ticks_us();
     ap6256_cyw43_port_set_profile(compat_profile);
     ap6256_cyw43_port_set_boot_mode(compat_boot_mode);
@@ -4044,11 +4451,14 @@ int cyw43_ll_wifi_on(cyw43_ll_t *self_in, uint32_t country) {
     // Set country; takes about 32ms
     memcpy(buf, "country\x00", 8);
     cyw43_put_le32(buf + 8, country & 0xffff);
-    if ((country >> 16) == 0) {
-        cyw43_put_le32(buf + 12, (uint32_t)-1);
-    } else {
-        cyw43_put_le32(buf + 12, country >> 16);
-    }
+    /*
+     * Preserve explicit revision 0. The upstream CYW43 helper used -1 when the
+     * country revision field was zero, but brcmfmac sends the requested
+     * country/revision pair directly. AP6256's NVRAM declares ccode=US,
+     * regrev=0; using US/-1 can select different 5 GHz CLM/power behavior just
+     * before association.
+     */
+    cyw43_put_le32(buf + 12, country >> 16);
     cyw43_put_le32(buf + 16, country & 0xffff);
     cyw43_do_ioctl(self, SDPCM_SET, WLC_SET_VAR, 20, buf, WWD_STA_INTERFACE);
 
@@ -4067,6 +4477,14 @@ int cyw43_ll_wifi_on(cyw43_ll_t *self_in, uint32_t country) {
     // Set some WiFi config
     cyw43_write_iovar_u32(self, "bus:txglom", 0, WWD_STA_INTERFACE); // tx glomming off
     cyw43_write_iovar_u32(self, "apsta", 1, WWD_STA_INTERFACE); // apsta on
+    /*
+     * brcmfmac keeps station connect/scan paths out of firmware autonomous
+     * power/roam decisions while cfg80211 owns association. Keep these
+     * best-effort: older firmware may reject an iovar, but accepted values make
+     * scan/join/DHCP behavior much more deterministic on AP6256.
+     */
+    cyw43_write_iovar_u32(self, "mpc", 0, WWD_STA_INTERFACE);
+    cyw43_write_iovar_u32(self, "roam_off", 1, WWD_STA_INTERFACE);
     cyw43_write_iovar_u32(self, "ampdu_ba_wsize", 8, WWD_STA_INTERFACE);
     cyw43_write_iovar_u32(self, "ampdu_mpdu", 4, WWD_STA_INTERFACE);
     cyw43_write_iovar_u32(self, "ampdu_rx_factor", 0, WWD_STA_INTERFACE);
@@ -4334,29 +4752,105 @@ static void ap6256_cyw43_drain_pending_packets(cyw43_int_t *self) {
                                         (int32_t)packets);
 }
 
-static uint16_t s_ap6256_scan_sync_id;
+typedef struct _ap6256_brcmf_scan_abort_params_t {
+    uint32_t ssid_len;
+    uint8_t ssid[32];
+    uint8_t bssid[6];
+    int8_t bss_type;
+    uint8_t scan_type;
+    int32_t nprobes;
+    int32_t active_time;
+    int32_t passive_time;
+    int32_t home_time;
+    int32_t channel_num;
+    uint16_t channel_list[1];
+} ap6256_brcmf_scan_abort_params_t;
 
 static void __attribute__((unused)) ap6256_cyw43_escan_abort(cyw43_int_t *self) {
-    cyw43_wifi_scan_options_t opts;
+    cyw43_wifi_scan_options_t escan_abort;
+    ap6256_brcmf_scan_abort_params_t abort_scan;
 
-    memset(&opts, 0, sizeof(opts));
-    opts.version = 1; // ESCAN_REQ_VERSION
-    opts.action = 3; // WL_SCAN_ACTION_ABORT
-    opts._ = s_ap6256_scan_sync_id;
-    memset(opts.bssid, 0xff, sizeof(opts.bssid));
-    opts.bss_type = 2; // WICED_BSS_TYPE_ANY
+    if ((self == NULL) || (s_ap6256_scan_active == 0U)) {
+        return;
+    }
 
     /*
-     * brcmfmac aborts outstanding scan work before starting association.
-     * BCM43456 can otherwise keep returning stale ESCAN_RESULT completions
-     * after the visible scan has completed, leaving join with no auth/assoc
-     * progress. Abort is best-effort: older firmware may report "no scan" and
-     * that should not block association.
+     * BCM43456 on this board keeps delivering ESCAN_RESULT after a completed
+     * directed scan if the host only detaches its callbacks. Send both abort
+     * shapes: the escan action is what started this path, while WLC_SCAN mirrors
+     * brcmfmac's scan-abort fallback before association.
     */
-    (void)cyw43_write_iovar_n(self, "escan", sizeof(opts), &opts, WWD_STA_INTERFACE);
+    memset(&escan_abort, 0, sizeof(escan_abort));
+    escan_abort.version = 1; // ESCAN_REQ_VERSION
+    escan_abort.action = 3; // WL_SCAN_ACTION_ABORT
+    escan_abort._ = s_ap6256_scan_sync_id;
+    memset(escan_abort.bssid, 0xff, sizeof(escan_abort.bssid));
+    escan_abort.bss_type = 2; // WICED_BSS_TYPE_ANY
+    (void)cyw43_write_iovar_n(self,
+                              "escan",
+                              sizeof(escan_abort),
+                              &escan_abort,
+                              WWD_STA_INTERFACE);
     ap6256_cyw43_drain_pending_packets(self);
-    cyw43_delay_ms(100);
+
+    memset(&abort_scan, 0, sizeof(abort_scan));
+    memset(abort_scan.bssid, 0xff, sizeof(abort_scan.bssid));
+    abort_scan.bss_type = 2; // WICED_BSS_TYPE_ANY
+    abort_scan.scan_type = 0;
+    abort_scan.nprobes = -1;
+    abort_scan.active_time = -1;
+    abort_scan.passive_time = -1;
+    abort_scan.home_time = -1;
+    abort_scan.channel_num = 1;
+    abort_scan.channel_list[0] = 0xffffU;
+
+    uint32_t start_count = ap6256_cyw43_port_async_event_count();
+    uint32_t start_ms = cyw43_hal_ticks_ms();
+    (void)cyw43_do_ioctl(self,
+                         SDPCM_SET,
+                         WLC_SCAN,
+                         sizeof(abort_scan),
+                         (uint8_t *)&abort_scan,
+                         WWD_STA_INTERFACE);
+    while ((cyw43_hal_ticks_ms() - start_ms) < 1000U) {
+        ap6256_cyw43_drain_pending_packets(self);
+        if ((ap6256_cyw43_port_async_event_count() != start_count) &&
+            (ap6256_cyw43_port_last_async_event_type() == CYW43_EV_ESCAN_RESULT) &&
+            ((ap6256_cyw43_port_last_async_event_status() == 4U) ||
+             (ap6256_cyw43_port_last_async_event_status() == 0U))) {
+            break;
+        }
+        cyw43_delay_ms(20);
+    }
+    /*
+     * brcmfmac keeps scan state busy/abort until the ESCAN completion path has
+     * settled. BCM43456 can deliver one more ESCAN_RESULT(status=ABORT/COMPLETE)
+     * after the first abort indication; starting association during that tail
+     * leaves the firmware in a scan/join overlap and has been observed to reset
+     * this AP6256 board. Require a short quiet window before returning.
+     */
+    {
+        uint32_t quiet_start_ms = cyw43_hal_ticks_ms();
+        uint32_t quiet_deadline_start_ms = quiet_start_ms;
+        uint32_t seen_count = ap6256_cyw43_port_async_event_count();
+
+        while (((cyw43_hal_ticks_ms() - quiet_start_ms) < 500U) &&
+               ((cyw43_hal_ticks_ms() - quiet_deadline_start_ms) < 1500U)) {
+            uint32_t count_before = ap6256_cyw43_port_async_event_count();
+
+            ap6256_cyw43_drain_pending_packets(self);
+            if (ap6256_cyw43_port_async_event_count() != count_before) {
+                seen_count = ap6256_cyw43_port_async_event_count();
+                quiet_start_ms = cyw43_hal_ticks_ms();
+            } else if (ap6256_cyw43_port_async_event_count() != seen_count) {
+                seen_count = ap6256_cyw43_port_async_event_count();
+                quiet_start_ms = cyw43_hal_ticks_ms();
+            }
+            cyw43_delay_ms(20);
+        }
+    }
     ap6256_cyw43_drain_pending_packets(self);
+    s_ap6256_scan_active = 0U;
 }
 
 #define AP6256_ESCAN_CHANNEL_COUNT 38U
@@ -4391,10 +4885,8 @@ static uint32_t ap6256_cyw43_scan_channel_list(uint16_t *dst, uint8_t force_5g)
     };
     static const uint8_t channels_5g[AP6256_ESCAN_5G_CHANNEL_COUNT] = {
         /*
-         * Prefer non-DFS social/UNII-3 channels before DFS. Directed
-         * manufacturing scans are bounded, and the doorbelkin fixture has
-         * been observed on channel 149; putting DFS first can spend the whole
-         * no-progress budget before the useful channel group is reached.
+         * Prefer non-DFS channels before DFS, but keep the list channel-complete
+         * for visible 5 GHz-only fixtures that can move across the band.
          */
         36, 40, 44, 48,
         149, 153, 157, 161, 165,
@@ -4442,13 +4934,12 @@ static void ap6256_cyw43_populate_dual_band_scan(ap6256_cyw43_escan_options_t *s
 
     if (force_5g != 0U) {
         /*
-         * Directed hidden-SSID 5 GHz scans need an explicit 5 GHz-only list so
-         * the firmware sends probe requests on the relevant band. For normal
-         * visible scans, mirror brcmfmac and leave channel_num at zero: firmware
+         * Directed 5 GHz scans need an explicit 5 GHz-only list so the firmware
+         * sends probe requests on the relevant band. For normal visible scans,
+         * mirror brcmfmac and leave channel_num at zero: firmware
          * then scans its regulatory/current channel set itself. The old
          * 38-channel host list started with 2.4 GHz and our bounded wait could
-         * return before channel 149+, hiding visible 5 GHz-only APs such as the
-         * doorbelkin fixture.
+         * return before useful 5 GHz channels, hiding visible 5 GHz-only APs.
          */
         channel_count = ap6256_cyw43_scan_channel_list(scan->channel_list, force_5g);
         scan->channel_num = (int32_t)channel_count;
@@ -4463,10 +4954,15 @@ int cyw43_ll_wifi_scan(cyw43_ll_t *self_in, cyw43_wifi_scan_options_t *opts) {
     uint16_t sync_id = (uint16_t)(s_ap6256_scan_sync_id + 1U);
     int wake_ret;
 
+    if (s_ap6256_scan_active != 0U) {
+        ap6256_cyw43_escan_abort(self);
+    }
+
     if (sync_id == 0U) {
         sync_id = 1U;
     }
     s_ap6256_scan_sync_id = sync_id;
+    s_ap6256_scan_active = 1U;
     ap6256_cyw43_populate_dual_band_scan(&scan, sync_id, opts);
     wake_ret = ap6256_cyw43_scan_wake(self, self_in);
     if (wake_ret != 0) {
@@ -4483,6 +4979,9 @@ int cyw43_ll_wifi_scan(cyw43_ll_t *self_in, cyw43_wifi_scan_options_t *opts) {
     }
     ap6256_cyw43_drain_pending_packets(self);
     wake_ret = cyw43_write_iovar_n(self, "escan", sizeof(scan), &scan, WWD_STA_INTERFACE);
+    if (wake_ret != 0) {
+        s_ap6256_scan_active = 0U;
+    }
     ap6256_cyw43_port_record_breadcrumb(AP6256_CYW43_BREADCRUMB_SCAN_RETURN, wake_ret);
     return wake_ret;
 }
@@ -4497,7 +4996,9 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
     if (ret != 0) {
         return ret;
     }
-    ap6256_cyw43_escan_abort(self);
+    if (AP6256_CYW43_ABORT_SCAN_BEFORE_JOIN != 0U) {
+        ap6256_cyw43_escan_abort(self);
+    }
 
     (void)cyw43_write_iovar_u32(self, "ampdu_ba_wsize", 8, WWD_STA_INTERFACE);
     uint32_t wpa_auth = 0;
@@ -4509,8 +5010,10 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
         wpa_auth = CYW43_WPA_AUTH_PSK | CYW43_WPA2_AUTH_PSK;
     } else if (auth_type == CYW43_AUTH_WPA_TKIP_PSK) {
         wpa_auth = CYW43_WPA_AUTH_PSK;
-    } else if (auth_type == CYW43_AUTH_WPA3_SAE_AES_PSK || auth_type == CYW43_AUTH_WPA3_WPA2_AES_PSK) {
+    } else if (auth_type == CYW43_AUTH_WPA3_SAE_AES_PSK) {
         wpa_auth = CYW43_WPA3_AUTH_SAE_PSK;
+    } else if (auth_type == CYW43_AUTH_WPA3_WPA2_AES_PSK) {
+        wpa_auth = CYW43_WPA3_AUTH_SAE_PSK | CYW43_WPA2_AUTH_PSK;
     } else {
         // Unsupported auth_type (security) value.
         return -CYW43_EINVAL;
@@ -4521,6 +5024,11 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
         return -CYW43_EINVAL;
     } else if (auth_type == CYW43_AUTH_WPA3_SAE_AES_PSK && key_len > CYW43_WPA_SAE_MAX_PASSWORD_LEN) {
         return -CYW43_EINVAL;
+    }
+
+    ret = ap6256_program_wpa2_psk_assoc_ie(self, wpa_auth);
+    if (ret != 0) {
+        return ret;
     }
 
     CYW43_VDEBUG("Setting wsec=0x%x\n", auth_type & 0xff);
@@ -4614,7 +5122,17 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
         }
         ret = 0;
     }
-    ret = cyw43_write_iovar_u32(self, "mfp", (wpa_auth == CYW43_WPA3_AUTH_SAE_PSK) ? MFP_CAPABLE : MFP_NONE, WWD_STA_INTERFACE);
+    {
+        uint32_t mfp = MFP_NONE;
+
+        if (wpa_auth == CYW43_WPA3_AUTH_SAE_PSK) {
+            mfp = MFP_REQUIRED;
+        } else if ((wpa_auth & CYW43_WPA3_AUTH_SAE_PSK) != 0U) {
+            mfp = MFP_CAPABLE;
+        }
+
+        ret = cyw43_write_iovar_u32(self, "mfp", mfp, WWD_STA_INTERFACE);
+    }
     if (ret != 0) {
         if (!ap6256_join_no_response_ok(ret)) {
             return ret;
@@ -4646,74 +5164,164 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
         ret = 0;
     }
 
+    if ((ap6256_join_channel_is_5g(channel) != 0U) &&
+        (AP6256_CYW43_5G_JOIN_QTXPOWER_QDBM != 0U)) {
+        /*
+         * brcmfmac exposes qtxpower as the normal firmware power-control knob.
+         * Cap TX power for the first 5 GHz association frames so AP6256 cannot
+         * reset the host while auth/assoc traffic starts. This keeps VHT enabled
+         * for the eventual Wi-Fi 5 link; it only reduces initial TX amplitude.
+         */
+        ret = cyw43_write_iovar_u32(self,
+                                    "qtxpower",
+                                    AP6256_CYW43_WL_TXPWR_OVERRIDE |
+                                        AP6256_CYW43_5G_JOIN_QTXPOWER_QDBM,
+                                    WWD_STA_INTERFACE);
+        if (ret != 0) {
+            if (!ap6256_join_no_response_ok(ret)) {
+                return ret;
+            }
+            ret = 0;
+        }
+    }
+
+    if ((ap6256_join_channel_is_5g(channel) != 0U) &&
+        (AP6256_CYW43_5G_JOIN_SAFE_VHT_OFF != 0U)) {
+        /*
+         * Keep this explicitly scoped to 5 GHz association stability testing:
+         * force the first association attempt down to the most conservative
+         * 11a-style feature set. If this stops the reset, the remaining task is
+         * a controlled HT/VHT re-enable path; if it still resets, the blocker is
+         * below MAC feature negotiation.
+         */
+        (void)cyw43_write_iovar_u32(self, "mpc", 0U, WWD_STA_INTERFACE);
+        (void)cyw43_write_iovar_u32(self, "frameburst", 0U, WWD_STA_INTERFACE);
+        (void)cyw43_write_iovar_u32(self, "ampdu", 0U, WWD_STA_INTERFACE);
+        (void)cyw43_write_iovar_u32(self, "amsdu", 0U, WWD_STA_INTERFACE);
+        (void)cyw43_write_iovar_u32(self, "nmode", 0U, WWD_STA_INTERFACE);
+        ret = cyw43_write_iovar_u32(self, "vhtmode", 0U, WWD_STA_INTERFACE);
+        if (ret != 0) {
+            if (!ap6256_join_no_response_ok(ret)) {
+                return ret;
+            }
+            ret = 0;
+        }
+        (void)cyw43_write_iovar_u32(self, "mimo_bw_cap", 0U, WWD_STA_INTERFACE);
+        (void)cyw43_write_iovar_u32(self, "ampdu_ba_wsize", 2U, WWD_STA_INTERFACE);
+        (void)cyw43_write_iovar_u32(self, "ampdu_mpdu", 1U, WWD_STA_INTERFACE);
+    }
+
     cyw43_put_le32(self->last_ssid_joined, ssid_len);
     memcpy(self->last_ssid_joined + 4, ssid, ssid_len);
+    if ((channel != CYW43_CHANNEL_NONE) && (AP6256_CYW43_ENABLE_JOIN_PREF != 0U)) {
+        size_t join_pref_len = ap6256_build_join_pref_5g(buf, sizeof(buf));
 
-    if (bssid) {
-        memset(buf, 0, 4 + 32 + 20 + 14);
-        cyw43_put_le32(buf, ssid_len);
-        memcpy(buf + 4, ssid, ssid_len);
-
-        /*
-         * brcmfmac's extended join payload is:
-         *   brcmf_ssid_le + brcmf_join_scan_params_le + brcmf_assoc_params_le
-         * Keep the same offsets/padding, including the 2-byte pad between BSSID
-         * and chanspec_num inside assoc params.
-         */
-        buf[4 + 32] = 0xff; // scan_type = default
-        cyw43_put_le32(buf + 4 + 32 + 4, (uint32_t)-1); // nprobes
-        cyw43_put_le32(buf + 4 + 32 + 8, (uint32_t)-1); // active_time
-        cyw43_put_le32(buf + 4 + 32 + 12, (uint32_t)-1); // passive_time
-        cyw43_put_le32(buf + 4 + 32 + 16, (uint32_t)-1); // home_time
-
-        memcpy(buf + 4 + 32 + 20, bssid, 6);
-        if (channel != CYW43_CHANNEL_NONE) {
-            cyw43_put_le32(buf + 4 + 32 + 4, 16); // nprobes
-            cyw43_put_le32(buf + 4 + 32 + 8, 320); // active_time
-            cyw43_put_le32(buf + 4 + 32 + 12, 400); // passive_time
-            cyw43_put_le32(buf + 4 + 32 + 20 + 8, 1); // chanspec_num
-            uint16_t chspec = AP6256_CHSPEC_20MHZ(channel);
-            cyw43_put_le16(buf + 4 + 32 + 20 + 12, chspec); // chanspec_list
-        }
-
-        // join the AP
-        CYW43_VDEBUG("Join AP\n");
-        ret = cyw43_write_iovar_n(self, "join", 4 + 32 + 20 + 14, buf, WWD_STA_INTERFACE);
-        if (ret != 0) {
-            /*
-             * Linux brcmfmac falls back to WLC_SET_SSID with
-             * brcmf_join_params when the extended join iovar is rejected.
-             * Keep the selected BSSID/channel in that fallback instead of
-             * drifting to any same-SSID BSS.
-             */
-            memset(buf, 0, 4 + 32 + 16);
-            cyw43_put_le32(buf, ssid_len);
-            memcpy(buf + 4, ssid, ssid_len);
-            memcpy(buf + 4 + 32, bssid, 6);
-            if (channel != CYW43_CHANNEL_NONE) {
-                cyw43_put_le32(buf + 4 + 32 + 8, 1); // chanspec_num
-                uint16_t chspec = AP6256_CHSPEC_20MHZ(channel);
-                cyw43_put_le16(buf + 4 + 32 + 12, chspec);
+        if (join_pref_len != 0U) {
+            if (ap6256_join_channel_is_5g(channel) == 0U) {
                 /*
-                 * brcmfmac sends sizeof(brcmf_join_params) once a chanspec
-                 * is present. That includes the aligned two-byte tail after
-                 * chanspec_list[0]; BCM43456 is less forgiving here than the
-                 * older CYW43 path, especially for hidden 5 GHz joins.
+                 * brcmfmac resets join preference to default unless cfg80211
+                 * asks for band preference. This prevents a previous 5 GHz run
+                 * from biasing the 2.4 GHz regression target.
                  */
-                ret = cyw43_do_ioctl(self, SDPCM_SET, WLC_SET_SSID, 4 + 32 + 16, buf, WWD_STA_INTERFACE);
-            } else {
-                ret = cyw43_do_ioctl(self, SDPCM_SET, WLC_SET_SSID, 4 + 32 + 12, buf, WWD_STA_INTERFACE);
+                memset(buf, 0, join_pref_len);
+                buf[0] = 1U; /* BRCMF_JOIN_PREF_RSSI */
+                buf[1] = 2U;
+            }
+            ret = cyw43_write_iovar_n(self, "join_pref", join_pref_len, buf, WWD_STA_INTERFACE);
+            if (ret != 0) {
+                if (!ap6256_join_no_response_ok(ret)) {
+                    return ret;
+                }
+                ret = 0;
             }
         }
+    }
+
+    if ((AP6256_CYW43_5G_JOIN_SET_CHANNEL_STARTER != 0U) &&
+        ((channel & CYW43_CHANNEL_CHANSPEC_FLAG) == 0U) &&
+        (channel != CYW43_CHANNEL_NONE)) {
+        uint32_t join_band = (ap6256_join_channel_is_5g(channel) != 0U) ? 1U : 2U;
+
+        /*
+         * brcmfmac primes firmware with the requested channel before connect
+         * when cfg80211 supplies one. This is especially important for the
+         * AP6256 5 GHz path where the association payload is SSID-only to avoid
+         * the reset-prone directed BSSID/chanspec trigger, but it also restores
+         * the known-good 2.4 GHz channel-fixed flow.
+         */
+        ret = cyw43_set_ioctl_u32(self, WLC_SET_BAND, join_band, WWD_STA_INTERFACE);
+        if (ret != 0) {
+            if (!ap6256_join_no_response_ok(ret)) {
+                return ret;
+            }
+            ret = 0;
+        }
+
+        ret = cyw43_set_ioctl_u32(self, WLC_SET_CHANNEL, channel, WWD_STA_INTERFACE);
+        if (ret != 0) {
+            if (!ap6256_join_no_response_ok(ret)) {
+                return ret;
+            }
+            ret = 0;
+        }
+    }
+
+    if ((bssid != NULL) && (AP6256_CYW43_DIRECTED_ASSOC_PAYLOAD != 0U)) {
+        size_t set_ssid_len;
+
+        if (AP6256_CYW43_USE_EXT_JOIN_IOVAR != 0U) {
+            size_t ext_join_len = ap6256_build_brcmf_ext_join_params(buf,
+                                                                     sizeof(buf),
+                                                                     ssid_len,
+                                                                     ssid,
+                                                                     bssid,
+                                                                     channel);
+            if (ext_join_len == 0U) {
+                return -CYW43_EINVAL;
+            }
+
+            /*
+             * Keep brcmfmac's ext_join available as a bench toggle. The normal
+             * AP6256 path currently prefers directed WLC_SET_SSID because the
+             * firmware emits ESCAN_RESULT(status=ABORT) during ext_join and can
+             * reset while scan/join overlap is active.
+             */
+            CYW43_VDEBUG("Join iovar directed\n");
+            ret = cyw43_write_iovar_n(self, "join", ext_join_len, buf, WWD_STA_INTERFACE);
+            if (ret == 0) {
+                return 0;
+            }
+            if ((AP6256_CYW43_5G_JOIN_IOVAR_ONLY != 0U) &&
+                (ap6256_join_channel_is_5g(channel) != 0U)) {
+                return ret;
+            }
+        }
+
+        /*
+         * Use brcmfmac's directed WLC_SET_SSID/brcmf_join_params fallback:
+         * SSID + BSSID + a single chanspec. When the runtime has a scanned
+         * BCM43456 chanspec it is passed through with CYW43_CHANNEL_FROM_CHANSPEC;
+         * otherwise this helper derives the normal 20 MHz primary-channel
+         * chanspec. Success is not inferred from TX-only completion; the runtime
+         * still requires a control completion or link/auth event, then DHCP.
+         */
+        set_ssid_len = ap6256_build_brcmf_join_params(buf,
+                                                      sizeof(buf),
+                                                      ssid_len,
+                                                      ssid,
+                                                      bssid,
+                                                      channel);
+        if (set_ssid_len == 0U) {
+            return -CYW43_EINVAL;
+        }
+        CYW43_VDEBUG("Set ssid directed\n");
+        ret = cyw43_do_ioctl(self, SDPCM_SET, WLC_SET_SSID, set_ssid_len, buf, WWD_STA_INTERFACE);
     } else {
         // join SSID
         CYW43_VDEBUG("Set ssid\n");
         ret = cyw43_do_ioctl(self, SDPCM_SET, WLC_SET_SSID, 36, self->last_ssid_joined, WWD_STA_INTERFACE);
     }
 
-    if (ap6256_join_no_response_ok(ret)) {
-        ret = 0;
-    }
     return ret;
 }
 

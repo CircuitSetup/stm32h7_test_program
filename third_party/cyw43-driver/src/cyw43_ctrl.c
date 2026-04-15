@@ -389,7 +389,14 @@ void cyw43_cb_process_async_event(void *cb_data, const cyw43_async_event_t *ev) 
         }
     } else if (ev->event_type == CYW43_EV_SET_SSID) {
         if (ev->status == 0) {
-            // Success setting SSID
+            /*
+             * brcmfmac treats SET_SSID success as association success and
+             * pairs it with PSK_SUP completion for WPA/WPA2. Some BCM43456
+             * AP6256 5 GHz joins report SET_SSID/PSK progress without the
+             * 43439-style JOIN/ASSOC/LINK ordering, so preserve that evidence
+             * in the generic CYW43 join-state bits.
+             */
+            self->wifi_join_state |= WIFI_JOIN_STATE_AUTH | WIFI_JOIN_STATE_LINK;
         } else if (ev->status == 3 && ev->reason == 0) {
             self->wifi_join_state = WIFI_JOIN_STATE_NONET;
             // No matching SSID found (could be out of range, or down)

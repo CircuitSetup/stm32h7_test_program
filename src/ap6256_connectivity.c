@@ -350,6 +350,14 @@ void ap6256_connectivity_set_wifi_selection_diag(const uint8_t bssid[6],
     s_wifi_state.last_update_ms = HAL_GetTick();
 }
 
+void ap6256_connectivity_set_wifi_candidate_diag(uint8_t candidate_index,
+                                                 uint8_t candidate_count)
+{
+    s_wifi_state.runtime_selected_candidate_index = candidate_index;
+    s_wifi_state.runtime_candidate_count = candidate_count;
+    s_wifi_state.last_update_ms = HAL_GetTick();
+}
+
 void ap6256_connectivity_set_wifi_selection_security_diag(uint8_t auth_mode,
                                                           uint8_t security_flags,
                                                           uint16_t akm_flags,
@@ -637,6 +645,28 @@ const char *ap6256_connectivity_wifi_security_name(ap6256_wifi_security_t securi
     }
 }
 
+static const char *ap6256_connectivity_rx_class_name(uint32_t rx_class)
+{
+    switch (rx_class) {
+    case AP6256_CYW43_RX_CLASS_NONE:
+        return "none";
+    case AP6256_CYW43_RX_CLASS_CONTROL:
+        return "control";
+    case AP6256_CYW43_RX_CLASS_ASYNC:
+        return "async_event";
+    case AP6256_CYW43_RX_CLASS_DATA:
+        return "data";
+    case AP6256_CYW43_RX_CLASS_MALFORMED:
+        return "malformed";
+    case AP6256_CYW43_RX_CLASS_RUNT:
+        return "runt";
+    case AP6256_CYW43_RX_CLASS_UNSUPPORTED:
+        return "unsupported";
+    default:
+        return "unknown";
+    }
+}
+
 static const char *ap6256_connectivity_scan_auth_name(uint8_t auth_mode)
 {
     if ((auth_mode & 0x04U) != 0U) {
@@ -766,7 +796,7 @@ void ap6256_connectivity_print_wifi_info(void)
                      (state->leased_ip[0] != '\0') ? state->leased_ip : "n/a",
                      (state->leased_mask[0] != '\0') ? state->leased_mask : "n/a",
                      (state->leased_gateway[0] != '\0') ? state->leased_gateway : "n/a");
-    test_uart_printf("  Wi-Fi selection: bssid=%02X:%02X:%02X:%02X:%02X:%02X ch=%u band=%s fixture=%s\r\n",
+    test_uart_printf("  Wi-Fi selection: bssid=%02X:%02X:%02X:%02X:%02X:%02X ch=%u band=%s candidate=%u/%u fixture=%s\r\n",
                      state->runtime_selected_bssid[0],
                      state->runtime_selected_bssid[1],
                      state->runtime_selected_bssid[2],
@@ -776,6 +806,8 @@ void ap6256_connectivity_print_wifi_info(void)
                      state->runtime_selected_channel,
                      (state->runtime_selected_5g != 0U) ? "5GHz" :
                          ((state->runtime_selected_channel != 0U) ? "2.4GHz" : "n/a"),
+                     state->runtime_selected_candidate_index,
+                     state->runtime_candidate_count,
                      (state->runtime_fixture_classification[0] != '\0') ?
                          state->runtime_fixture_classification : "n/a");
     test_uart_printf("  Wi-Fi BSS security: sec=%s flags=0x%02X akm=%s(0x%04X) pair=%s(0x%04X) group=%s(0x%04X) mfp=%s rsncap=0x%04X chanspec=0x%04X\r\n",
@@ -870,7 +902,7 @@ void ap6256_connectivity_print_wifi_info(void)
                      breadcrumb_reset_flags,
                      (unsigned long)ap6256_cyw43_port_breadcrumb_reset_flags(),
                      (long)ap6256_cyw43_port_setup_status());
-    test_uart_printf("  Pre-reset diag: valid=%u bc=%s/%lu detail=%ld tick=%lu io_cur=%s %lu/%lu if=%lu len=%lu id=%lu st=%ld poll=%ld io_done=%lu/%lu if=%lu id=%lu st=%ld poll=%ld pend=%u/%s dat1=%u irq=%02X f1=%08lX c52=%lu/%08lX st=%ld c53=%c/f%u/b%u/bs%lu/l%lu/st%ld/fr%u fc=%u/%u/%u syn=%u\r\n",
+    test_uart_printf("  Pre-reset diag: valid=%u bc=%s/%lu detail=%ld tick=%lu io_cur=%s %lu/%lu if=%lu len=%lu id=%lu st=%ld poll=%ld assoc=%u/%02X:%02X:%02X:%02X:%02X:%02X/ch%u/%s/cs%04X/auth%02X cand=%u/%u pend=%u/%s dat1=%u irq=%02X f1=%08lX c52=%lu/%08lX st=%ld c53=%c/f%u/b%u/bs%lu/l%lu/st%ld/fr%u rx=%s/ch%u ev=%u/%u/%u fc=%u/%u/%u syn=%u\r\n",
                      pre_reset.valid,
                      ap6256_cyw43_port_breadcrumb_name(pre_reset.breadcrumb_stage),
                      (unsigned long)pre_reset.breadcrumb_stage,
@@ -884,12 +916,19 @@ void ap6256_connectivity_print_wifi_info(void)
                      (unsigned long)pre_reset.ioctl_id,
                      (long)pre_reset.ioctl_status,
                      (long)pre_reset.ioctl_poll,
-                     (unsigned long)pre_reset.completed_ioctl_kind,
-                     (unsigned long)pre_reset.completed_ioctl_cmd,
-                     (unsigned long)pre_reset.completed_ioctl_iface,
-                     (unsigned long)pre_reset.completed_ioctl_id,
-                     (long)pre_reset.completed_ioctl_status,
-                     (long)pre_reset.completed_ioctl_poll,
+                     pre_reset.assoc_target_valid,
+                     pre_reset.assoc_target_bssid[0],
+                     pre_reset.assoc_target_bssid[1],
+                     pre_reset.assoc_target_bssid[2],
+                     pre_reset.assoc_target_bssid[3],
+                     pre_reset.assoc_target_bssid[4],
+                     pre_reset.assoc_target_bssid[5],
+                     pre_reset.assoc_target_channel,
+                     (pre_reset.assoc_target_5g != 0U) ? "5G" : "2G",
+                     pre_reset.assoc_target_chanspec,
+                     pre_reset.assoc_target_auth_code,
+                     pre_reset.assoc_candidate_index,
+                     pre_reset.assoc_candidate_count,
                      pre_reset.packet_pending,
                      ap6256_connectivity_packet_source_name(pre_reset.packet_pending_source),
                      pre_reset.dat1_level,
@@ -905,6 +944,11 @@ void ap6256_connectivity_print_wifi_info(void)
                      (unsigned long)pre_reset.cmd53_length,
                      (long)pre_reset.cmd53_status,
                      pre_reset.cmd53_frame_size,
+                     ap6256_connectivity_rx_class_name(pre_reset.rx_class),
+                     pre_reset.rx_channel,
+                     pre_reset.async_event_type,
+                     pre_reset.async_event_status,
+                     pre_reset.async_event_reason,
                      pre_reset.send_flow_control,
                      pre_reset.send_tx_seq,
                      pre_reset.send_credit,
@@ -957,6 +1001,16 @@ void ap6256_connectivity_print_wifi_info(void)
                      (unsigned long)ap6256_cyw43_port_last_cmd_arg(),
                      (long)ap6256_cyw43_port_last_cmd_status(),
                      (unsigned long)ap6256_cyw43_port_last_cmd_response());
+    test_uart_printf("  RX diag: class=%s chan=%u sdpcm=%u payload=%u first=0x%08lX ev=%lu/%lu/%lu f=0x%lX\r\n",
+                     ap6256_connectivity_rx_class_name(ap6256_cyw43_port_last_rx_class()),
+                     ap6256_cyw43_port_last_rx_channel(),
+                     ap6256_cyw43_port_last_rx_sdpcm_len(),
+                     ap6256_cyw43_port_last_rx_payload_len(),
+                     (unsigned long)ap6256_cyw43_port_last_rx_first_word(),
+                     (unsigned long)ap6256_cyw43_port_last_async_event_type(),
+                     (unsigned long)ap6256_cyw43_port_last_async_event_status(),
+                     (unsigned long)ap6256_cyw43_port_last_async_event_reason(),
+                     (unsigned long)ap6256_cyw43_port_last_async_event_flags());
     test_uart_printf("  TX ctl: valid=%u io=%lu/%lu if=%lu len=%lu id=%lu sdpcm=%lu xfer=%lu bs=%lu crc=0x%08lX first=%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X\r\n",
                      tx_diag.valid,
                      (unsigned long)tx_diag.kind,

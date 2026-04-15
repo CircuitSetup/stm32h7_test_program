@@ -33,6 +33,8 @@ typedef struct {
     uint8_t runtime_selected_bssid[6];
     uint8_t runtime_selected_channel;
     uint8_t runtime_selected_5g;
+    uint8_t runtime_selected_candidate_index;
+    uint8_t runtime_candidate_count;
     char runtime_fixture_classification[32];
     uint8_t runtime_selected_auth_mode;
     uint8_t runtime_selected_security_flags;
@@ -190,6 +192,8 @@ void ap6256_connectivity_set_wifi_selection_diag(const uint8_t bssid[6],
                                                  uint16_t channel,
                                                  uint8_t selected_5g,
                                                  const char *fixture_classification);
+void ap6256_connectivity_set_wifi_candidate_diag(uint8_t candidate_index,
+                                                 uint8_t candidate_count);
 void ap6256_connectivity_set_wifi_selection_security_diag(uint8_t auth_mode,
                                                           uint8_t security_flags,
                                                           uint16_t akm_flags,

@@ -33,6 +33,14 @@
 #define AP6256_CYW43_SCAN_WAKE_IORDY_VERIFY    6U
 #define AP6256_CYW43_SCAN_WAKE_OK              7U
 
+#define AP6256_CYW43_RX_CLASS_NONE       0U
+#define AP6256_CYW43_RX_CLASS_CONTROL    1U
+#define AP6256_CYW43_RX_CLASS_ASYNC      2U
+#define AP6256_CYW43_RX_CLASS_DATA       3U
+#define AP6256_CYW43_RX_CLASS_MALFORMED  4U
+#define AP6256_CYW43_RX_CLASS_RUNT       5U
+#define AP6256_CYW43_RX_CLASS_UNSUPPORTED 6U
+
 #define AP6256_CYW43_BREADCRUMB_NONE           0U
 #define AP6256_CYW43_BREADCRUMB_SETUP_ENTER    1U
 #define AP6256_CYW43_BREADCRUMB_WIFI_ON        2U
@@ -114,6 +122,21 @@ typedef struct {
     uint8_t send_tx_seq;
     uint8_t send_credit;
     uint8_t send_synthetic_credit;
+    uint8_t assoc_target_valid;
+    uint8_t assoc_target_bssid[6];
+    uint8_t assoc_target_channel;
+    uint8_t assoc_target_5g;
+    uint8_t assoc_target_auth_code;
+    uint8_t assoc_candidate_index;
+    uint8_t assoc_candidate_count;
+    uint16_t assoc_target_chanspec;
+    uint8_t rx_class;
+    uint8_t rx_channel;
+    uint16_t rx_payload_len;
+    uint8_t async_event_type;
+    uint8_t async_event_status;
+    uint8_t async_event_reason;
+    uint8_t async_event_flags;
 } ap6256_cyw43_pre_reset_diag_t;
 
 typedef struct {
@@ -351,6 +374,23 @@ void ap6256_cyw43_port_record_control_tx_frame(uint32_t kind,
                                                uint32_t block_size,
                                                const uint8_t *frame,
                                                uint32_t frame_len);
+void ap6256_cyw43_port_record_assoc_target(const uint8_t bssid[6],
+                                           uint16_t channel,
+                                           uint8_t selected_5g,
+                                           uint16_t chanspec,
+                                           uint32_t auth_type,
+                                           uint8_t candidate_index,
+                                           uint8_t candidate_count);
+void ap6256_cyw43_port_record_rx_frame(uint8_t rx_class,
+                                       uint8_t channel,
+                                       uint16_t sdpcm_len,
+                                       uint16_t payload_len,
+                                       const uint8_t *payload);
+uint8_t ap6256_cyw43_port_last_rx_class(void);
+uint8_t ap6256_cyw43_port_last_rx_channel(void);
+uint16_t ap6256_cyw43_port_last_rx_sdpcm_len(void);
+uint16_t ap6256_cyw43_port_last_rx_payload_len(void);
+uint32_t ap6256_cyw43_port_last_rx_first_word(void);
 void ap6256_cyw43_port_get_control_tx_diag(ap6256_cyw43_control_tx_diag_t *diag);
 void ap6256_cyw43_port_get_pre_reset_diag(ap6256_cyw43_pre_reset_diag_t *diag);
 uint8_t ap6256_cyw43_port_pre_reset_diag_valid(void);
