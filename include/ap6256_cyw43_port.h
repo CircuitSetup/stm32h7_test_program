@@ -290,11 +290,16 @@ void ap6256_cyw43_port_record_async_event(uint32_t event_type,
                                           uint32_t status,
                                           uint32_t reason,
                                           uint32_t flags);
+void ap6256_cyw43_port_record_join_event(uint32_t event_type,
+                                         uint32_t status,
+                                         uint32_t reason,
+                                         uint32_t flags);
 uint32_t ap6256_cyw43_port_last_async_event_type(void);
 uint32_t ap6256_cyw43_port_last_async_event_status(void);
 uint32_t ap6256_cyw43_port_last_async_event_reason(void);
 uint32_t ap6256_cyw43_port_last_async_event_flags(void);
 uint32_t ap6256_cyw43_port_async_event_count(void);
+uint32_t ap6256_cyw43_port_join_event_count(void);
 void ap6256_cyw43_port_record_ioctl(uint32_t kind,
                                     uint32_t cmd,
                                     uint32_t iface,

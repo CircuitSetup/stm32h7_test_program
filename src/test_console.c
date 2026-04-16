@@ -63,6 +63,7 @@ static void print_help(void)
     test_uart_write_str("  wifi_nvram ap6256|generic\r\n");
     test_uart_write_str("  bt_info\r\n");
     test_uart_write_str("  radio_info\r\n");
+    test_uart_write_str("  rtt_info\r\n");
     test_uart_write_str("  confidence_info\r\n");
     test_uart_write_str("  stress eth <count>\r\n");
     test_uart_write_str("  stress wifi <count>\r\n");
@@ -234,6 +235,11 @@ static void handle_command(char *line)
         return;
     }
 
+    if (str_ieq(cmd, "rtt_info")) {
+        test_uart_print_rtt_info();
+        return;
+    }
+
     if (str_ieq(cmd, "confidence_info")) {
         board_test_print_confidence_info();
         return;
@@ -307,6 +313,7 @@ static void handle_command(char *line)
     }
 
     (void)arg3;
+    test_uart_note_command_parse_error();
     test_uart_write_str("Unknown command. Type 'help'.\r\n");
 }
 
@@ -340,6 +347,7 @@ static void console_exec_worker(void *argument)
             continue;
         }
 
+        test_uart_note_command_started();
         handle_command(line);
         s_console_busy = 0U;
         test_console_show_prompt();
@@ -360,6 +368,7 @@ void test_console_banner(void)
 
 void test_console_show_prompt(void)
 {
+    test_uart_note_prompt_shown();
     print_prompt();
 }
 
@@ -378,6 +387,7 @@ void test_console_poll(void)
     }
 
     if ((s_console_queue == NULL) || (s_console_exec_worker == NULL)) {
+        test_uart_note_command_started();
         handle_command(line);
         test_console_show_prompt();
         return;

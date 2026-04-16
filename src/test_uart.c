@@ -12,10 +12,15 @@
 #include <string.h>
 
 #define UART_TX_TIMEOUT_MS 2000U
-#define RTT_TX_RETRY_TIMEOUT_MS 5000U
 
 static volatile uint8_t s_uart_console_enabled = 1U;
 static osMutexId_t s_input_mutex;
+static volatile uint32_t s_uart_line_overflows;
+static volatile uint32_t s_uart_ignored_chars;
+static volatile uint32_t s_uart_command_parse_errors;
+static volatile uint32_t s_uart_crlf_tail_consumed;
+static volatile uint32_t s_uart_last_prompt_tick;
+static volatile uint8_t s_uart_last_command_returned_to_prompt;
 
 static osMutexId_t test_uart_input_mutex(void)
 {
@@ -57,6 +62,13 @@ static bool test_uart_get_char(uint8_t *ch, uint32_t timeout_ms)
     return false;
 }
 
+static void test_uart_consume_line_tail(void)
+{
+    if (test_rtt_consume_line_tail()) {
+        s_uart_crlf_tail_consumed++;
+    }
+}
+
 static int test_uart_read_line_internal(char *buffer,
                                         size_t buffer_len,
                                         uint32_t timeout_ms,
@@ -64,6 +76,7 @@ static int test_uart_read_line_internal(char *buffer,
 {
     uint32_t start;
     size_t idx = 0U;
+    bool overflowed = false;
     osMutexId_t input_mutex = test_uart_input_mutex();
 
     if ((buffer == NULL) || (buffer_len < 2U)) {
@@ -90,6 +103,7 @@ static int test_uart_read_line_internal(char *buffer,
             }
             buffer[idx] = '\0';
             test_uart_write_str("\r\n");
+            test_uart_consume_line_tail();
             if (input_mutex != NULL) {
                 (void)osMutexRelease(input_mutex);
             }
@@ -105,6 +119,7 @@ static int test_uart_read_line_internal(char *buffer,
         }
 
         if ((ch < 0x20U) || (ch > 0x7EU)) {
+            s_uart_ignored_chars++;
             continue;
         }
 
@@ -117,6 +132,9 @@ static int test_uart_read_line_internal(char *buffer,
             } else {
                 test_uart_write(&ch, 1U);
             }
+        } else if (!overflowed) {
+            overflowed = true;
+            s_uart_line_overflows++;
         }
     }
 
@@ -136,34 +154,19 @@ static int test_uart_read_line_internal(char *buffer,
 
 void test_uart_init(void)
 {
-    static const uint8_t rtt_boot_msg[] = "[RTT] transport initialized\r\n";
-
     test_rtt_init();
-    (void)test_rtt_write(rtt_boot_msg, sizeof(rtt_boot_msg) - 1U);
+    test_rtt_flush_rx();
+    test_uart_printf("[RTT] transport initialized boot=%lu\r\n",
+                     (unsigned long)test_rtt_boot_sequence());
 }
 
 void test_uart_write(const uint8_t *data, size_t len)
 {
-    size_t rtt_offset = 0U;
-    uint32_t rtt_wait_start = 0U;
-
     if ((data == NULL) || (len == 0U)) {
         return;
     }
 
-    rtt_wait_start = HAL_GetTick();
-    while (rtt_offset < len) {
-        size_t written = test_rtt_write(&data[rtt_offset], len - rtt_offset);
-        if (written > 0U) {
-            rtt_offset += written;
-            rtt_wait_start = HAL_GetTick();
-            continue;
-        }
-
-        if ((HAL_GetTick() - rtt_wait_start) >= RTT_TX_RETRY_TIMEOUT_MS) {
-            break;
-        }
-    }
+    (void)test_rtt_write(data, len);
 
 #if BOARD_LOG_MIRROR_UART
     if ((s_uart_console_enabled != 0U) && network_manager_console_uart_allowed()) {
@@ -290,6 +293,64 @@ void test_uart_set_uart_console_enabled(bool enabled)
 bool test_uart_uart_console_enabled(void)
 {
     return (s_uart_console_enabled != 0U);
+}
+
+void test_uart_note_command_parse_error(void)
+{
+    s_uart_command_parse_errors++;
+}
+
+void test_uart_note_command_started(void)
+{
+    s_uart_last_command_returned_to_prompt = 0U;
+}
+
+void test_uart_note_prompt_shown(void)
+{
+    s_uart_last_prompt_tick = HAL_GetTick();
+    s_uart_last_command_returned_to_prompt = 1U;
+}
+
+void test_uart_print_rtt_info(void)
+{
+    test_rtt_stats_t stats;
+
+    memset(&stats, 0, sizeof(stats));
+    test_rtt_get_stats(&stats);
+
+    test_uart_printf("RTT: enabled=%u initialized=%u boot=%lu cb=0x%08lX up=0x%08lX down=0x%08lX\r\n",
+                     (unsigned int)stats.enabled,
+                     (unsigned int)stats.initialized,
+                     (unsigned long)stats.boot_sequence,
+                     (unsigned long)stats.cb_addr,
+                     (unsigned long)stats.up_buffer_addr,
+                     (unsigned long)stats.down_buffer_addr);
+    test_uart_printf("  Up: size=%lu wr=%lu rd=%lu free=%lu writes=%lu bytes=%lu dropped=%lu partial=%lu full=%lu\r\n",
+                     (unsigned long)stats.up_size,
+                     (unsigned long)stats.up_wr,
+                     (unsigned long)stats.up_rd,
+                     (unsigned long)stats.up_free,
+                     (unsigned long)stats.write_calls,
+                     (unsigned long)stats.bytes_written,
+                     (unsigned long)stats.bytes_dropped,
+                     (unsigned long)stats.partial_writes,
+                     (unsigned long)stats.full_events);
+    test_uart_printf("  Down: size=%lu wr=%lu rd=%lu pending=%lu reads=%lu bytes=%lu flushed=%lu\r\n",
+                     (unsigned long)stats.down_size,
+                     (unsigned long)stats.down_wr,
+                     (unsigned long)stats.down_rd,
+                     (unsigned long)stats.down_pending,
+                     (unsigned long)stats.read_calls,
+                     (unsigned long)stats.bytes_read,
+                     (unsigned long)stats.flush_bytes);
+    test_uart_printf("  Console: uart_enabled=%u line_overflows=%lu ignored_chars=%lu parse_errors=%lu crlf_tail=%lu last_prompt=%lu command_active=%u mode=nonblocking_drop\r\n",
+                     test_uart_uart_console_enabled() ? 1U : 0U,
+                     (unsigned long)s_uart_line_overflows,
+                     (unsigned long)s_uart_ignored_chars,
+                     (unsigned long)s_uart_command_parse_errors,
+                     (unsigned long)s_uart_crlf_tail_consumed,
+                     (unsigned long)s_uart_last_prompt_tick,
+                     (s_uart_last_command_returned_to_prompt == 0U) ? 1U : 0U);
 }
 
 void test_uart_console_path(board_test_result_t *result)

@@ -114,6 +114,14 @@ SECTIONS
     __bss_end__ = _ebss;
   } >RAM_D1
 
+  .rtt (NOLOAD) :
+  {
+    . = ALIGN(32);
+    KEEP(*(.rtt))
+    KEEP(*(.rtt*))
+    . = ALIGN(32);
+  } >RAM_D1
+
   .eth_rx_desc (NOLOAD) :
   {
     . = ALIGN(32);

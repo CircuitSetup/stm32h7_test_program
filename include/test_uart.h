@@ -16,5 +16,9 @@ void test_uart_flush_rx(void);
 void test_uart_flush_uart_rx(void);
 void test_uart_set_uart_console_enabled(bool enabled);
 bool test_uart_uart_console_enabled(void);
+void test_uart_note_command_parse_error(void);
+void test_uart_note_command_started(void);
+void test_uart_note_prompt_shown(void);
+void test_uart_print_rtt_info(void);
 
 #endif

@@ -29,7 +29,7 @@ extern "C" {
 #define BOARD_ENABLE_CSV_LOG 0
 
 #define BOARD_RTT_UP_BUFFER_SIZE 32768U
-#define BOARD_RTT_DOWN_BUFFER_SIZE 1024U
+#define BOARD_RTT_DOWN_BUFFER_SIZE 4096U
 
 extern UART_HandleTypeDef huart3;
 extern SPI_HandleTypeDef hspi4;

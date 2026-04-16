@@ -105,6 +105,7 @@ static volatile uint32_t s_cyw43_last_async_event_status;
 static volatile uint32_t s_cyw43_last_async_event_reason;
 static volatile uint32_t s_cyw43_last_async_event_flags;
 static volatile uint32_t s_cyw43_async_event_count;
+static volatile uint32_t s_cyw43_join_event_count;
 static volatile uint32_t s_cyw43_last_ioctl_kind;
 static volatile uint32_t s_cyw43_last_ioctl_cmd;
 static volatile uint32_t s_cyw43_last_ioctl_iface;
@@ -802,6 +803,7 @@ void ap6256_cyw43_port_deinit(void)
     s_cyw43_last_async_event_reason = 0U;
     s_cyw43_last_async_event_flags = 0U;
     s_cyw43_async_event_count = 0U;
+    s_cyw43_join_event_count = 0U;
     s_cyw43_last_ioctl_kind = 0U;
     s_cyw43_last_ioctl_cmd = 0U;
     s_cyw43_last_ioctl_iface = 0U;
@@ -1532,6 +1534,19 @@ void ap6256_cyw43_port_record_async_event(uint32_t event_type,
     ap6256_cyw43_port_persist_pre_reset_diag(1U);
 }
 
+void ap6256_cyw43_port_record_join_event(uint32_t event_type,
+                                         uint32_t status,
+                                         uint32_t reason,
+                                         uint32_t flags)
+{
+    s_cyw43_join_event_count++;
+    s_cyw43_last_async_event_type = event_type;
+    s_cyw43_last_async_event_status = status;
+    s_cyw43_last_async_event_reason = reason;
+    s_cyw43_last_async_event_flags = flags;
+    ap6256_cyw43_port_persist_pre_reset_diag(1U);
+}
+
 uint32_t ap6256_cyw43_port_last_async_event_type(void)
 {
     return s_cyw43_last_async_event_type;
@@ -1555,6 +1570,11 @@ uint32_t ap6256_cyw43_port_last_async_event_flags(void)
 uint32_t ap6256_cyw43_port_async_event_count(void)
 {
     return s_cyw43_async_event_count;
+}
+
+uint32_t ap6256_cyw43_port_join_event_count(void)
+{
+    return s_cyw43_join_event_count;
 }
 
 void ap6256_cyw43_port_record_ioctl(uint32_t kind,

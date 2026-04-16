@@ -796,6 +796,9 @@ void ap6256_connectivity_print_wifi_info(void)
                      (state->leased_ip[0] != '\0') ? state->leased_ip : "n/a",
                      (state->leased_mask[0] != '\0') ? state->leased_mask : "n/a",
                      (state->leased_gateway[0] != '\0') ? state->leased_gateway : "n/a");
+    test_uart_printf("  Wi-Fi backend: bcm43456_fullmac join_events=%lu async_events=%lu\r\n",
+                     (unsigned long)ap6256_cyw43_port_join_event_count(),
+                     (unsigned long)ap6256_cyw43_port_async_event_count());
     test_uart_printf("  Wi-Fi selection: bssid=%02X:%02X:%02X:%02X:%02X:%02X ch=%u band=%s candidate=%u/%u fixture=%s\r\n",
                      state->runtime_selected_bssid[0],
                      state->runtime_selected_bssid[1],

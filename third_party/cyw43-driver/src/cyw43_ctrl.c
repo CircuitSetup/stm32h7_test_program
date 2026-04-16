@@ -347,6 +347,23 @@ void cyw43_cb_process_async_event(void *cb_data, const cyw43_async_event_t *ev) 
     cyw43_t *self = cb_data;
 
     ap6256_cyw43_port_record_async_event(ev->event_type, ev->status, ev->reason, ev->flags);
+    switch (ev->event_type) {
+    case CYW43_EV_SET_SSID:
+    case CYW43_EV_JOIN:
+    case CYW43_EV_AUTH:
+    case CYW43_EV_DEAUTH:
+    case CYW43_EV_DEAUTH_IND:
+    case CYW43_EV_ASSOC:
+    case CYW43_EV_DISASSOC:
+    case CYW43_EV_DISASSOC_IND:
+    case CYW43_EV_LINK:
+    case CYW43_EV_PRUNE:
+    case CYW43_EV_PSK_SUP:
+        ap6256_cyw43_port_record_join_event(ev->event_type, ev->status, ev->reason, ev->flags);
+        break;
+    default:
+        break;
+    }
 
     if (self->trace_flags & CYW43_TRACE_ASYNC_EV) {
         cyw43_dump_async_event(ev);
