@@ -456,12 +456,22 @@ void cyw43_cb_process_async_event(void *cb_data, const cyw43_async_event_t *ev) 
         } else {
             self->wifi_join_state = WIFI_JOIN_STATE_FAIL;
         }
-    } else if (ev->event_type == CYW43_EV_DEAUTH_IND) {
-        if (ev->status == 0 && ev->reason == 2) {
-            // Deauth, probably because password was wrong; disassociate
-            self->pend_disassoc = true;
-            cyw43_schedule_internal_poll_dispatch(cyw43_poll_func);
+    } else if (ev->event_type == CYW43_EV_DEAUTH || ev->event_type == CYW43_EV_DEAUTH_IND) {
+        if ((ev->interface == CYW43_ITF_STA) ||
+            ((self->wifi_join_state & (WIFI_JOIN_STATE_AUTH | WIFI_JOIN_STATE_LINK | WIFI_JOIN_STATE_KEYED)) != 0U)) {
+            /*
+             * brcmfmac treats deauth/deauth-ind as a real disconnect. Do not
+             * leave the lwIP link up after a successful low-level association;
+             * otherwise DHCP can run against a station that has already been
+             * rejected or torn down by the AP. Some BCM43456 event records do
+             * not carry the expected STA interface byte, so during an active
+             * STA join we trust the deauth event type itself.
+             */
+            cyw43_cb_tcpip_set_link_down(self, CYW43_ITF_STA);
+            self->wifi_join_state = WIFI_JOIN_STATE_BADAUTH;
         }
+        self->pend_disassoc = true;
+        cyw43_schedule_internal_poll_dispatch(cyw43_poll_func);
     } else if (ev->event_type == CYW43_EV_LINK) {
         if (ev->status == 0) {
             if (ev->flags & 1) {
@@ -495,8 +505,12 @@ void cyw43_cb_process_async_event(void *cb_data, const cyw43_async_event_t *ev) 
     }
 
     if (self->wifi_join_state == WIFI_JOIN_STATE_ALL) {
-        // STA connected
-        self->wifi_join_state = WIFI_JOIN_STATE_ACTIVE;
+        /*
+         * STA connected. Keep AUTH/LINK/KEYED evidence in the state word rather
+         * than collapsing it back to plain ACTIVE; the AP6256 runtime uses that
+         * evidence to avoid starting DHCP while firmware has only associated but
+         * has not completed the WPA key exchange.
+         */
         cyw43_cb_tcpip_set_link_up(self, CYW43_ITF_STA);
     }
 }

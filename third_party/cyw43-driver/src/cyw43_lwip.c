@@ -35,6 +35,7 @@
 
 #include "cyw43.h"
 #include "cyw43_stats.h"
+#include "ap6256_cyw43_port.h"
 #if CYW43_LWIP
 #include "lwip/etharp.h"
 #include "lwip/ethip6.h"
@@ -50,6 +51,84 @@
 #endif
 
 #if CYW43_LWIP
+
+static void cyw43_extract_l2_diag(const uint8_t *frame,
+                                  size_t frame_len,
+                                  uint16_t *ethertype,
+                                  uint8_t *ip_proto,
+                                  uint16_t *src_port,
+                                  uint16_t *dst_port,
+                                  uint32_t *src_mac_hi,
+                                  uint16_t *src_mac_lo,
+                                  uint32_t *dhcp_chaddr_hi,
+                                  uint16_t *dhcp_chaddr_lo) {
+    uint16_t type = 0;
+    uint8_t proto = 0;
+    uint16_t sport = 0;
+    uint16_t dport = 0;
+    uint32_t mac_hi = 0;
+    uint16_t mac_lo = 0;
+    uint32_t chaddr_hi = 0;
+    uint16_t chaddr_lo = 0;
+
+    if ((frame != NULL) && (frame_len > 13)) {
+        type = ((uint16_t)frame[12] << 8) | frame[13];
+        mac_hi = ((uint32_t)frame[6] << 24) |
+                 ((uint32_t)frame[7] << 16) |
+                 ((uint32_t)frame[8] << 8) |
+                 frame[9];
+        mac_lo = ((uint16_t)frame[10] << 8) | frame[11];
+        if ((type == 0x0800) && (frame_len > 23)) {
+            uint8_t ihl = (uint8_t)((frame[14] & 0x0f) * 4);
+            size_t port_offset = 14U + ihl;
+            size_t bootp_offset = port_offset + 8U;
+
+            proto = frame[23];
+            if (((proto == 6) || (proto == 17)) &&
+                (ihl >= 20) &&
+                (frame_len >= (port_offset + 4U))) {
+                sport = ((uint16_t)frame[port_offset] << 8) | frame[port_offset + 1U];
+                dport = ((uint16_t)frame[port_offset + 2U] << 8) | frame[port_offset + 3U];
+                if ((proto == 17) &&
+                    (sport == 68) &&
+                    (dport == 67) &&
+                    (frame_len >= (bootp_offset + 34U))) {
+                    const uint8_t *chaddr = &frame[bootp_offset + 28U];
+                    chaddr_hi = ((uint32_t)chaddr[0] << 24) |
+                                ((uint32_t)chaddr[1] << 16) |
+                                ((uint32_t)chaddr[2] << 8) |
+                                chaddr[3];
+                    chaddr_lo = ((uint16_t)chaddr[4] << 8) | chaddr[5];
+                }
+            }
+        }
+    }
+
+    if (ethertype != NULL) {
+        *ethertype = type;
+    }
+    if (ip_proto != NULL) {
+        *ip_proto = proto;
+    }
+    if (src_port != NULL) {
+        *src_port = sport;
+    }
+    if (dst_port != NULL) {
+        *dst_port = dport;
+    }
+    if (src_mac_hi != NULL) {
+        *src_mac_hi = mac_hi;
+    }
+    if (src_mac_lo != NULL) {
+        *src_mac_lo = mac_lo;
+    }
+    if (dhcp_chaddr_hi != NULL) {
+        *dhcp_chaddr_hi = chaddr_hi;
+    }
+    if (dhcp_chaddr_lo != NULL) {
+        *dhcp_chaddr_lo = chaddr_lo;
+    }
+}
 
 #if CYW43_NETUTILS
 static void cyw43_ethernet_trace(cyw43_t *self, struct netif *netif, size_t len, const void *data, unsigned int flags) {
@@ -87,13 +166,47 @@ static void cyw43_ethernet_trace(cyw43_t *self, struct netif *netif, size_t len,
 
 static err_t cyw43_netif_output(struct netif *netif, struct pbuf *p) {
     cyw43_t *self = netif->state;
+    uint8_t diag_buf[128];
+    uint16_t diag_len = (p->tot_len < sizeof(diag_buf)) ? p->tot_len : sizeof(diag_buf);
+    uint16_t ethertype = 0;
+    uint8_t ip_proto = 0;
+    uint16_t src_port = 0;
+    uint16_t dst_port = 0;
+    uint32_t src_mac_hi = 0;
+    uint16_t src_mac_lo = 0;
+    uint32_t dhcp_chaddr_hi = 0;
+    uint16_t dhcp_chaddr_lo = 0;
     #if CYW43_NETUTILS
     if (self->trace_flags != 0) {
         cyw43_ethernet_trace(self, netif, (size_t)-1, p, NETUTILS_TRACE_IS_TX | NETUTILS_TRACE_NEWLINE);
     }
     #endif
     int itf = netif->name[1] - '0';
+    if (diag_len != 0U) {
+        (void)pbuf_copy_partial(p, diag_buf, diag_len, 0);
+        cyw43_extract_l2_diag(diag_buf,
+                              diag_len,
+                              &ethertype,
+                              &ip_proto,
+                              &src_port,
+                              &dst_port,
+                              &src_mac_hi,
+                              &src_mac_lo,
+                              &dhcp_chaddr_hi,
+                              &dhcp_chaddr_lo);
+    }
     int ret = cyw43_send_ethernet(self, itf, p->tot_len, (void *)p, true);
+    ap6256_cyw43_port_record_tx_frame((uint8_t)itf,
+                                      (uint16_t)p->tot_len,
+                                      ethertype,
+                                      ip_proto,
+                                      src_port,
+                                      dst_port,
+                                      src_mac_hi,
+                                      src_mac_lo,
+                                      dhcp_chaddr_hi,
+                                      dhcp_chaddr_lo,
+                                      ret);
     if (ret) {
         CYW43_WARN("send_ethernet failed: %d\n", ret);
         return ERR_IF;
@@ -224,7 +337,12 @@ void cyw43_cb_tcpip_init(cyw43_t *self, int itf) {
         #endif
         #if LWIP_DHCP
         dhcp_set_struct(n, &self->dhcp_client);
-        netifapi_dhcp_start(n);
+        /*
+         * AP6256/BCM43456 starts DHCP from the board runtime only after
+         * firmware link/key evidence is observed. Starting DHCP here leaves
+         * lwIP running before carrier is valid, which can wedge lease
+         * acquisition after a successful association.
+         */
         #endif
         #endif
         #if LWIP_IPV6

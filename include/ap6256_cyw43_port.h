@@ -391,11 +391,37 @@ void ap6256_cyw43_port_record_rx_frame(uint8_t rx_class,
                                        uint16_t sdpcm_len,
                                        uint16_t payload_len,
                                        const uint8_t *payload);
+void ap6256_cyw43_port_record_tx_frame(uint8_t itf,
+                                       uint16_t payload_len,
+                                       uint16_t ethertype,
+                                       uint8_t ip_proto,
+                                       uint16_t src_port,
+                                       uint16_t dst_port,
+                                       uint32_t src_mac_hi,
+                                       uint16_t src_mac_lo,
+                                       uint32_t dhcp_chaddr_hi,
+                                       uint16_t dhcp_chaddr_lo,
+                                       int32_t status);
 uint8_t ap6256_cyw43_port_last_rx_class(void);
 uint8_t ap6256_cyw43_port_last_rx_channel(void);
 uint16_t ap6256_cyw43_port_last_rx_sdpcm_len(void);
 uint16_t ap6256_cyw43_port_last_rx_payload_len(void);
 uint32_t ap6256_cyw43_port_last_rx_first_word(void);
+uint16_t ap6256_cyw43_port_last_rx_ethertype(void);
+uint8_t ap6256_cyw43_port_last_rx_ip_proto(void);
+uint16_t ap6256_cyw43_port_last_rx_src_port(void);
+uint16_t ap6256_cyw43_port_last_rx_dst_port(void);
+uint8_t ap6256_cyw43_port_last_tx_itf(void);
+uint16_t ap6256_cyw43_port_last_tx_payload_len(void);
+uint16_t ap6256_cyw43_port_last_tx_ethertype(void);
+uint8_t ap6256_cyw43_port_last_tx_ip_proto(void);
+uint16_t ap6256_cyw43_port_last_tx_src_port(void);
+uint16_t ap6256_cyw43_port_last_tx_dst_port(void);
+uint32_t ap6256_cyw43_port_last_tx_src_mac_hi(void);
+uint16_t ap6256_cyw43_port_last_tx_src_mac_lo(void);
+uint32_t ap6256_cyw43_port_last_tx_dhcp_chaddr_hi(void);
+uint16_t ap6256_cyw43_port_last_tx_dhcp_chaddr_lo(void);
+int32_t ap6256_cyw43_port_last_tx_status(void);
 void ap6256_cyw43_port_get_control_tx_diag(ap6256_cyw43_control_tx_diag_t *diag);
 void ap6256_cyw43_port_get_pre_reset_diag(ap6256_cyw43_pre_reset_diag_t *diag);
 uint8_t ap6256_cyw43_port_pre_reset_diag_valid(void);

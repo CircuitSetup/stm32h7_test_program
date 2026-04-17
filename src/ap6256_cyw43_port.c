@@ -161,7 +161,22 @@ static volatile uint8_t s_cyw43_last_rx_class;
 static volatile uint8_t s_cyw43_last_rx_channel;
 static volatile uint16_t s_cyw43_last_rx_sdpcm_len;
 static volatile uint16_t s_cyw43_last_rx_payload_len;
+static volatile uint16_t s_cyw43_last_rx_ethertype;
+static volatile uint8_t s_cyw43_last_rx_ip_proto;
+static volatile uint16_t s_cyw43_last_rx_src_port;
+static volatile uint16_t s_cyw43_last_rx_dst_port;
 static volatile uint32_t s_cyw43_last_rx_first_word;
+static volatile uint8_t s_cyw43_last_tx_itf;
+static volatile uint16_t s_cyw43_last_tx_payload_len;
+static volatile uint16_t s_cyw43_last_tx_ethertype;
+static volatile uint8_t s_cyw43_last_tx_ip_proto;
+static volatile uint16_t s_cyw43_last_tx_src_port;
+static volatile uint16_t s_cyw43_last_tx_dst_port;
+static volatile uint32_t s_cyw43_last_tx_src_mac_hi;
+static volatile uint16_t s_cyw43_last_tx_src_mac_lo;
+static volatile uint32_t s_cyw43_last_tx_dhcp_chaddr_hi;
+static volatile uint16_t s_cyw43_last_tx_dhcp_chaddr_lo;
+static volatile int32_t s_cyw43_last_tx_status;
 static ap6256_cyw43_control_tx_diag_t s_cyw43_control_tx_diag;
 
 static void ap6256_cyw43_enable_backup_access(void)
@@ -1960,11 +1975,16 @@ void ap6256_cyw43_port_record_rx_frame(uint8_t rx_class,
                                        const uint8_t *payload)
 {
     uint32_t first_word = 0U;
+    uint16_t ethertype = 0U;
 
     s_cyw43_last_rx_class = rx_class;
     s_cyw43_last_rx_channel = channel;
     s_cyw43_last_rx_sdpcm_len = sdpcm_len;
     s_cyw43_last_rx_payload_len = payload_len;
+    s_cyw43_last_rx_ethertype = 0U;
+    s_cyw43_last_rx_ip_proto = 0U;
+    s_cyw43_last_rx_src_port = 0U;
+    s_cyw43_last_rx_dst_port = 0U;
 
     if (payload != NULL) {
         first_word = payload[0];
@@ -1977,8 +1997,52 @@ void ap6256_cyw43_port_record_rx_frame(uint8_t rx_class,
         if (payload_len > 3U) {
             first_word |= ((uint32_t)payload[3] << 24U);
         }
+        if (payload_len > 13U) {
+            ethertype = ((uint16_t)payload[12] << 8U) | payload[13];
+            s_cyw43_last_rx_ethertype = ethertype;
+        }
+        if ((ethertype == 0x0800U) && (payload_len > 23U)) {
+            uint8_t ip_header_len = (uint8_t)((payload[14] & 0x0FU) * 4U);
+            uint16_t port_offset = (uint16_t)(14U + ip_header_len);
+
+            s_cyw43_last_rx_ip_proto = payload[23];
+            if (((payload[23] == 6U) || (payload[23] == 17U)) &&
+                (ip_header_len >= 20U) &&
+                (payload_len >= (uint16_t)(port_offset + 4U))) {
+                s_cyw43_last_rx_src_port = ((uint16_t)payload[port_offset] << 8U) |
+                                           payload[port_offset + 1U];
+                s_cyw43_last_rx_dst_port = ((uint16_t)payload[port_offset + 2U] << 8U) |
+                                           payload[port_offset + 3U];
+            }
+        }
     }
     s_cyw43_last_rx_first_word = first_word;
+    ap6256_cyw43_port_persist_pre_reset_diag(0U);
+}
+
+void ap6256_cyw43_port_record_tx_frame(uint8_t itf,
+                                       uint16_t payload_len,
+                                       uint16_t ethertype,
+                                       uint8_t ip_proto,
+                                       uint16_t src_port,
+                                       uint16_t dst_port,
+                                       uint32_t src_mac_hi,
+                                       uint16_t src_mac_lo,
+                                       uint32_t dhcp_chaddr_hi,
+                                       uint16_t dhcp_chaddr_lo,
+                                       int32_t status)
+{
+    s_cyw43_last_tx_itf = itf;
+    s_cyw43_last_tx_payload_len = payload_len;
+    s_cyw43_last_tx_ethertype = ethertype;
+    s_cyw43_last_tx_ip_proto = ip_proto;
+    s_cyw43_last_tx_src_port = src_port;
+    s_cyw43_last_tx_dst_port = dst_port;
+    s_cyw43_last_tx_src_mac_hi = src_mac_hi;
+    s_cyw43_last_tx_src_mac_lo = src_mac_lo;
+    s_cyw43_last_tx_dhcp_chaddr_hi = dhcp_chaddr_hi;
+    s_cyw43_last_tx_dhcp_chaddr_lo = dhcp_chaddr_lo;
+    s_cyw43_last_tx_status = status;
     ap6256_cyw43_port_persist_pre_reset_diag(0U);
 }
 
@@ -2005,6 +2069,81 @@ uint16_t ap6256_cyw43_port_last_rx_payload_len(void)
 uint32_t ap6256_cyw43_port_last_rx_first_word(void)
 {
     return s_cyw43_last_rx_first_word;
+}
+
+uint16_t ap6256_cyw43_port_last_rx_ethertype(void)
+{
+    return s_cyw43_last_rx_ethertype;
+}
+
+uint8_t ap6256_cyw43_port_last_rx_ip_proto(void)
+{
+    return s_cyw43_last_rx_ip_proto;
+}
+
+uint16_t ap6256_cyw43_port_last_rx_src_port(void)
+{
+    return s_cyw43_last_rx_src_port;
+}
+
+uint16_t ap6256_cyw43_port_last_rx_dst_port(void)
+{
+    return s_cyw43_last_rx_dst_port;
+}
+
+uint8_t ap6256_cyw43_port_last_tx_itf(void)
+{
+    return s_cyw43_last_tx_itf;
+}
+
+uint16_t ap6256_cyw43_port_last_tx_payload_len(void)
+{
+    return s_cyw43_last_tx_payload_len;
+}
+
+uint16_t ap6256_cyw43_port_last_tx_ethertype(void)
+{
+    return s_cyw43_last_tx_ethertype;
+}
+
+uint8_t ap6256_cyw43_port_last_tx_ip_proto(void)
+{
+    return s_cyw43_last_tx_ip_proto;
+}
+
+uint16_t ap6256_cyw43_port_last_tx_src_port(void)
+{
+    return s_cyw43_last_tx_src_port;
+}
+
+uint16_t ap6256_cyw43_port_last_tx_dst_port(void)
+{
+    return s_cyw43_last_tx_dst_port;
+}
+
+uint32_t ap6256_cyw43_port_last_tx_src_mac_hi(void)
+{
+    return s_cyw43_last_tx_src_mac_hi;
+}
+
+uint16_t ap6256_cyw43_port_last_tx_src_mac_lo(void)
+{
+    return s_cyw43_last_tx_src_mac_lo;
+}
+
+uint32_t ap6256_cyw43_port_last_tx_dhcp_chaddr_hi(void)
+{
+    return s_cyw43_last_tx_dhcp_chaddr_hi;
+}
+
+uint16_t ap6256_cyw43_port_last_tx_dhcp_chaddr_lo(void)
+{
+    return s_cyw43_last_tx_dhcp_chaddr_lo;
+}
+
+int32_t ap6256_cyw43_port_last_tx_status(void)
+{
+    return s_cyw43_last_tx_status;
 }
 
 void ap6256_cyw43_port_get_control_tx_diag(ap6256_cyw43_control_tx_diag_t *diag)
