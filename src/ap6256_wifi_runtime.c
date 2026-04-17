@@ -28,10 +28,16 @@
 #define AP6256_WIFI_SCAN_FORCE_5G         (-5)
 #define AP6256_WIFI_CHANNEL_5G_UNKNOWN    0xFFFFU
 #define AP6256_WIFI_SCAN_RECOVERY_F2_BLOCK_SIZE 64U
-#define AP6256_WIFI_JOIN_F2_BLOCK_SIZE     64U
+#define AP6256_WIFI_JOIN_F2_BLOCK_SIZE     512U
 #define AP6256_WIFI_DIRECTED_5G_SCAN_TIMEOUT_MS 15000U
 #define AP6256_WIFI_PROFILE_BROAD_SCAN_TIMEOUT_MS 8000U
-#define AP6256_WIFI_5G_JOIN_NO_PROGRESS_MS 1200U
+/*
+ * BCM43456 5 GHz association can take multiple seconds after scan cleanup,
+ * channel priming, and WPA2/transition-mode security setup. A 1.2 s guard was
+ * useful for catching resets, but it cuts off normal FullMAC auth/assoc before
+ * firmware has a chance to emit LINK/PSK evidence.
+ */
+#define AP6256_WIFI_5G_JOIN_NO_PROGRESS_MS 8000U
 #define AP6256_WIFI_MAX_JOIN_CANDIDATES   AP6256_WIFI_MAX_SCAN_RESULTS
 #define AP6256_CYW43_IOCTL_SET_BAND       ((142U << 1U) | 1U)
 #define AP6256_CYW43_IOCTL_SET_CHANNEL    ((30U << 1U) | 1U)
@@ -571,6 +577,13 @@ static void ap6256_wifi_runtime_sort_join_candidates(ap6256_wifi_scan_entry_t *c
 
     for (uint32_t i = 0U; i < candidate_count; ++i) {
         for (uint32_t j = i + 1U; j < candidate_count; ++j) {
+            /*
+             * brcmfmac/cfg80211 try the selected BSS, which normally means
+             * the strongest compatible candidate. Earlier channel-priority
+             * ordering was a reset-avoidance experiment; after fixing partial
+             * join cleanup it incorrectly tries weak DFS BSSIDs before the
+             * strong ch149 candidates.
+             */
             if (candidates[j].rssi > candidates[i].rssi) {
                 ap6256_wifi_scan_entry_t tmp = candidates[i];
                 candidates[i] = candidates[j];
@@ -1770,11 +1783,14 @@ static bool ap6256_wifi_runtime_recover_radio_before_join(const char *reason,
 
 static void ap6256_wifi_runtime_disconnect_current(void)
 {
+    int link_status;
+
     if (s_wifi_runtime.initialized == 0U) {
         return;
     }
 
-    if ((s_wifi_runtime.link_up != 0U) || (cyw43_state.wifi_join_state != 0U)) {
+    link_status = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
+    if ((s_wifi_runtime.link_up != 0U) || (link_status >= CYW43_LINK_NOIP)) {
         (void)cyw43_wifi_leave(&cyw43_state, CYW43_ITF_STA);
         osDelay(100U);
         ap6256_wifi_runtime_poll_burst(16U, 4U);
@@ -1797,11 +1813,11 @@ static bool ap6256_wifi_runtime_restart_radio_for_next_candidate(const char *rea
 
     if (s_wifi_runtime.initialized != 0U) {
         /*
-         * A directed BCM43456 WLC_SET_SSID timeout leaves firmware in a
-         * half-association state. HIL showed candidate 1 can fail cleanly, but
-         * candidate 2 resets the STM32 if we keep the same CYW43 session alive.
-         * Treat a candidate retry as a new FullMAC session: tear the dongle down,
-         * keep the radio owner, then run the normal boot/setup path again.
+         * A failed 5 GHz association leaves BCM43456 firmware in a
+         * half-associating state. Recycle the CYW43 runtime before the next
+         * BSSID so stale join state cannot poison control TX for the remaining
+         * candidates. The reset-prone directed BSSID payload is no longer used
+         * on 5 GHz, so this is safer than carrying the session forward.
          */
         ap6256_wifi_runtime_suspend();
         osDelay(250U);
@@ -1855,10 +1871,10 @@ static uint32_t ap6256_wifi_runtime_select_auth(uint8_t security_flags,
      * only use mixed mode when the BSS really advertises WPA1/TKIP/mixed facts.
      *
      * BCM43456/AP6256 transition-mode APs can advertise both PSK and SAE with
-     * optional MFP. Keep PMF-required BSSes rejected before this point, then
-     * prefer the PSK/CCMP side of transition mode for this cut. HIL proved the
-     * SAE password iovar path can reset this board before association, while
-     * the WPA2 path at least reaches firmware join/event processing.
+     * optional MFP. This MCU runtime does not implement brcmfmac's external SAE
+     * authentication callback path, so force the PSK/CCMP side of transition
+     * mode unless PMF is required. The low-level layer also supplies a WPA2-only
+     * RSN IE so firmware does not silently pick SAE.
      */
     if ((has_sae != 0U) && (has_psk != 0U) && (mfp != CYW43_SCAN_MFP_REQUIRED)) {
         (void)selected_5g;
@@ -2266,16 +2282,15 @@ static ap6256_status_t ap6256_wifi_runtime_run_common(const char *ssid,
                          join_chanspec);
         if (ap6256_wifi_runtime_channel_is_5g(channel) != 0U) {
             /*
-             * Directed 5 GHz WLC_SET_SSID/brcmf_join_params still resets this
-             * AP6256 path after control TX. Use the stable 36-byte SSID command
-             * shape, but prime firmware with the selected 5 GHz band/channel
-             * first so it does not need to infer the BSS from band preference
-             * alone. Success is still gated by real join/link/DHCP evidence.
+             * Use the brcmfmac-directed connect shape: exact scan-selected
+             * BSSID plus a single validated chanspec in WLC_SET_SSID. Earlier
+             * resets attributed to this payload were later traced to partial
+             * join cleanup, while the SSID-only 5 GHz path now resets during
+             * join_wait without producing association evidence.
              */
-            test_uart_write_str("[ INFO ] wifi.connect stage: bcm43456 5GHz channel-primed SSID join\r\n");
-            join_bssid = NULL;
-            validation_bssid = NULL;
-            join_channel = channel;
+            test_uart_write_str("[ INFO ] wifi.connect stage: directed 5GHz BSSID/chanspec join\r\n");
+            join_bssid = bssid;
+            join_channel = CYW43_CHANNEL_FROM_CHANSPEC(join_chanspec);
         } else {
             test_uart_write_str("[ INFO ] wifi.connect stage: directed 2.4GHz BSSID/chanspec join\r\n");
             join_bssid = bssid;

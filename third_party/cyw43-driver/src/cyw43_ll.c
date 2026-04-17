@@ -369,7 +369,7 @@ static size_t __attribute__((unused)) ap6256_build_brcmf_ext_join_params(uint8_t
      * scan/control path has been recovered or reopened: the dongle can no
      * longer rely on a previous escan cache to find the target BSS.
      */
-    buf[AP6256_BRCMF_SSID_LEN] = 0xFFU; /* scan_type = -1/default */
+    cyw43_put_le32(buf + AP6256_BRCMF_SSID_LEN, 0xFFFFFFFFUL); /* scan_type = -1/default */
     if (channel != CYW43_CHANNEL_NONE) {
         nprobes = AP6256_BRCMF_SCAN_JOIN_ACTIVE_MS / AP6256_BRCMF_SCAN_JOIN_PROBE_MS;
         active_time = AP6256_BRCMF_SCAN_JOIN_ACTIVE_MS;
@@ -534,11 +534,15 @@ static size_t __attribute__((unused)) ap6256_build_brcmf_ext_join_params(uint8_t
 #endif
 
 #ifndef AP6256_CYW43_USE_EXT_JOIN_IOVAR
-#define AP6256_CYW43_USE_EXT_JOIN_IOVAR              (0U)
+#define AP6256_CYW43_USE_EXT_JOIN_IOVAR              (1U)
 #endif
 
 #ifndef AP6256_CYW43_5G_JOIN_IOVAR_ONLY
-#define AP6256_CYW43_5G_JOIN_IOVAR_ONLY              (0U)
+#define AP6256_CYW43_5G_JOIN_IOVAR_ONLY              (1U)
+#endif
+
+#ifndef AP6256_CYW43_5G_BROADCAST_EXT_JOIN
+#define AP6256_CYW43_5G_BROADCAST_EXT_JOIN           (0U)
 #endif
 
 #ifndef AP6256_CYW43_5G_JOIN_QTXPOWER_QDBM
@@ -573,6 +577,7 @@ static size_t __attribute__((unused)) ap6256_build_brcmf_ext_join_params(uint8_t
 #define CYW43_WPA2_AUTH_PSK (0x0080)
 #define CYW43_WPA3_AUTH_SAE_PSK (0x40000)
 #define AP6256_WIFI_JOIN_STATE_KIND_MASK (0x000fU)
+#define AP6256_WIFI_JOIN_STATE_ACTIVE    (0x0001U)
 #define AP6256_WIFI_JOIN_STATE_FAIL      (0x0002U)
 #define AP6256_WIFI_JOIN_STATE_NONET     (0x0003U)
 #define AP6256_WIFI_JOIN_STATE_BADAUTH   (0x0004U)
@@ -600,17 +605,16 @@ static bool ap6256_join_no_response_ok(int ret) {
            (ap6256_cyw43_port_last_ioctl_phase() == AP6256_CYW43_IOCTL_PHASE_WAIT_NO_PACKET);
 }
 
-static int ap6256_program_wpa2_psk_assoc_ie(cyw43_int_t *self, uint32_t wpa_auth) {
+static int ap6256_program_wpa2_psk_assoc_ie(cyw43_int_t *self, uint32_t wpa_auth, uint32_t mfp) {
     /*
      * brcmfmac programs the RSN/WPA IE before association so firmware knows the
      * exact AKM/cipher set requested by cfg80211. This matters on WPA2/WPA3
-     * transition APs: advertise a WPA2-PSK/CCMP association IE without PMF so
-     * the dongle does not attempt the unproven SAE/PMF external-auth path just
-     * because the BSS advertises it. Linux brcmfmac only enables MFP from the
-     * supplicant-provided IE and feature policy; this MCU path has no external
-     * SAE/PMF supplicant, so WPA2-PSK must stay strictly WPA2 here.
+     * transition APs: advertise a WPA2-PSK/CCMP association IE and mirror MFPC
+     * when selected, but never MFPR/SAE unless the MCU path has explicit SAE
+     * support. That keeps the association strictly WPA2-PSK while matching the
+     * BSS's management-frame-protection capability.
      */
-    static const uint8_t rsn_wpa2_psk_ccmp[] = {
+    static const uint8_t rsn_wpa2_psk_ccmp_template[] = {
         0x30, 0x14,             /* RSN IE, length 20 */
         0x01, 0x00,             /* version */
         0x00, 0x0f, 0xac, 0x04, /* group cipher: CCMP */
@@ -620,11 +624,22 @@ static int ap6256_program_wpa2_psk_assoc_ie(cyw43_int_t *self, uint32_t wpa_auth
         0x00, 0x0f, 0xac, 0x02, /* AKM: PSK */
         0x00, 0x00              /* RSN caps: no PMF */
     };
+    uint8_t rsn_wpa2_psk_ccmp[sizeof(rsn_wpa2_psk_ccmp_template)];
     int ret;
 
     if (((wpa_auth & CYW43_WPA2_AUTH_PSK) == 0U) ||
         ((wpa_auth & CYW43_WPA3_AUTH_SAE_PSK) != 0U)) {
         return 0;
+    }
+
+    memcpy(rsn_wpa2_psk_ccmp, rsn_wpa2_psk_ccmp_template, sizeof(rsn_wpa2_psk_ccmp));
+    if (mfp == MFP_CAPABLE) {
+        /*
+         * RSN Capabilities bit 7 is MFPC. Do not set MFPR; this keeps the
+         * association WPA2-PSK compatible while matching transition-mode BSSs
+         * that advertise management-frame protection capability.
+         */
+        rsn_wpa2_psk_ccmp[20] = 0x80U;
     }
 
     ret = cyw43_write_iovar_n(self,
@@ -711,6 +726,24 @@ static bool ap6256_join_event_proves_started(void) {
     return (join_state & (AP6256_WIFI_JOIN_STATE_AUTH |
                           AP6256_WIFI_JOIN_STATE_LINK |
                           AP6256_WIFI_JOIN_STATE_KEYED)) != 0U;
+}
+
+static bool ap6256_join_should_drop_prelink_data(void) {
+    uint32_t join_state = cyw43_state.wifi_join_state;
+    uint32_t kind = join_state & AP6256_WIFI_JOIN_STATE_KIND_MASK;
+
+    if (kind != AP6256_WIFI_JOIN_STATE_ACTIVE) {
+        return false;
+    }
+
+    /*
+     * Do not deliver data/EAPOL-looking frames to lwIP while the firmware is
+     * still proving association. brcmfmac only exposes netdev RX after carrier
+     * evidence; on this AP6256 path the reset signature is a DATA_HEADER packet
+     * during join_wait before AUTH/ASSOC/LINK/PSK state exists.
+     */
+    return (join_state & (AP6256_WIFI_JOIN_STATE_LINK |
+                          AP6256_WIFI_JOIN_STATE_KEYED)) == 0U;
 }
 
 static bool cyw43_sdpcm_tx_window_open(cyw43_int_t *self) {
@@ -1573,8 +1606,19 @@ static int cyw43_sdpcm_send_common(cyw43_int_t *self, uint32_t kind, size_t len,
                                          ap6256_cyw43_port_send_synthetic_credit(),
                                          0);
 
-    // padding is taken from junk at end of buffer
+    /*
+     * brcmfmac keeps small control frames as byte-mode CMD53 transfers when
+     * they fit within the programmed F2 block size. Padding every association
+     * control frame to bs64/l128 made BCM43456 reset immediately after directed
+     * 5 GHz join TX. With F2 set to 512 for association, keep sub-512 control
+     * frames 4-byte aligned so cyw43_sdio_cmd53() selects byte mode.
+     */
     size_t transfer_len = CYW43_SDPCM_WRITE_BYTES_PAD(size);
+    if ((kind == CONTROL_HEADER) &&
+        (size <= 512U) &&
+        (ap6256_cyw43_port_runtime_f2_block_size() >= 512U)) {
+        transfer_len = ALIGN_UINT(size, 4U);
+    }
     if (kind == CONTROL_HEADER) {
         ap6256_cyw43_port_record_control_tx_frame(kind,
                                                   s_ap6256_pending_ioctl_cmd,
@@ -2316,7 +2360,9 @@ void cyw43_ll_process_packets(cyw43_ll_t *self_in) {
             }
             packets_processed++;
         } else if (ret == DATA_HEADER) {
-            cyw43_cb_process_ethernet(self->cb_data, len >> 31, len & 0x7fffffff, buf);
+            if (!ap6256_join_should_drop_prelink_data()) {
+                cyw43_cb_process_ethernet(self->cb_data, len >> 31, len & 0x7fffffff, buf);
+            }
             packets_processed++;
         } else if (CYW43_USE_SPI && ret == CYW43_ERROR_WRONG_PAYLOAD_TYPE) {
             // Ignore this error when using the SPI interface.  It can occur when there
@@ -2424,31 +2470,6 @@ static int cyw43_do_ioctl(cyw43_int_t *self, uint32_t kind, uint32_t cmd, size_t
         return ret;
     }
 
-    if ((kind == SDPCM_SET) && (cmd == WLC_SET_SSID)) {
-        /*
-         * BCM43456/AP6256 does not reliably produce a synchronous BCDC
-         * completion for association start, and repeated no-packet response
-         * polling after WLC_SET_SSID has been the reset trigger. Return to the
-         * higher-level FullMAC join wait immediately after a successful control
-         * TX. That wait is still evidence-based: AUTH/ASSOC/LINK/PSK/DHCP must
-         * arrive before the connection is considered successful.
-         */
-        ap6256_cyw43_port_set_ioctl_phase(AP6256_CYW43_IOCTL_PHASE_ACCEPTED_ASYNC);
-        ap6256_cyw43_port_finish_ioctl(1, 0);
-        ap6256_cyw43_port_set_ioctl_attempt_flags(recovery_attempted,
-                                                  forced_probe_attempted,
-                                                  0U);
-        ap6256_cyw43_port_record_ioctl(kind,
-                                       cmd,
-                                       iface,
-                                       (uint32_t)len,
-                                       self->wwd_sdpcm_requested_ioctl_id,
-                                       1,
-                                       0);
-        self->had_successful_packet = false;
-        return 0;
-    }
-
     /*
      * A previous successful packet only proves the last F2 read was legal. It
      * must not authorize arbitrary control waits, so normal ioctls re-check
@@ -2549,7 +2570,9 @@ static int cyw43_do_ioctl(cyw43_int_t *self, uint32_t kind, uint32_t cmd, size_t
                 return 0;
             }
         } else if (ret == DATA_HEADER) {
-            cyw43_cb_process_ethernet(self->cb_data, res_len >> 31, res_len & 0x7fffffff, res_buf);
+            if (!ap6256_join_should_drop_prelink_data()) {
+                cyw43_cb_process_ethernet(self->cb_data, res_len >> 31, res_len & 0x7fffffff, res_buf);
+            }
         } else if (ret >= 0) {
             CYW43_WARN("do_ioctl: got unexpected packet %d\n", ret);
         }
@@ -2640,31 +2663,6 @@ static int cyw43_do_ioctl(cyw43_int_t *self, uint32_t kind, uint32_t cmd, size_t
      * profile and the 64-byte scan-recovery profile.
      */
     if (allow_scan_resend &&
-        (last_poll == -1)) {
-        ap6256_cyw43_port_set_ioctl_phase(AP6256_CYW43_IOCTL_PHASE_ACCEPTED_ASYNC);
-        ap6256_cyw43_port_finish_ioctl(1, last_poll);
-        ap6256_cyw43_port_set_ioctl_attempt_flags(recovery_attempted,
-                                                  forced_probe_attempted,
-                                                  0U);
-        ap6256_cyw43_port_record_ioctl(kind,
-                                       cmd,
-                                       iface,
-                                       (uint32_t)len,
-                                       self->wwd_sdpcm_requested_ioctl_id,
-                                       1,
-                                       last_poll);
-        return 0;
-    }
-
-    /*
-     * BCM43456/AP6256 often starts association without returning a synchronous
-     * BCDC completion for WLC_SET_SSID. Treat the control TX as "join command
-     * accepted for event wait", not as a completed connection: the runtime must
-     * still observe AUTH/ASSOC/LINK/PSK and DHCP evidence before reporting PASS.
-     * This keeps the no-reset property while matching FullMAC's event-driven
-     * association semantics on this firmware.
-     */
-    if (is_association_trigger &&
         (last_poll == -1)) {
         ap6256_cyw43_port_set_ioctl_phase(AP6256_CYW43_IOCTL_PHASE_ACCEPTED_ASYNC);
         ap6256_cyw43_port_finish_ioctl(1, last_poll);
@@ -4764,7 +4762,9 @@ static void ap6256_cyw43_drain_pending_packets(cyw43_int_t *self) {
                 cyw43_cb_process_async_event(self, ev);
             }
         } else if (ret == DATA_HEADER) {
-            cyw43_cb_process_ethernet(self->cb_data, len >> 31, len & 0x7fffffff, buf);
+            if (!ap6256_join_should_drop_prelink_data()) {
+                cyw43_cb_process_ethernet(self->cb_data, len >> 31, len & 0x7fffffff, buf);
+            }
         }
 
         packets++;
@@ -5024,6 +5024,7 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
 
     (void)cyw43_write_iovar_u32(self, "ampdu_ba_wsize", 8, WWD_STA_INTERFACE);
     uint32_t wpa_auth = 0;
+    uint32_t mfp = MFP_NONE;
     if (auth_type == CYW43_AUTH_OPEN) {
         wpa_auth = 0;
     } else if (auth_type == CYW43_AUTH_WPA2_AES_PSK) {
@@ -5048,7 +5049,22 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
         return -CYW43_EINVAL;
     }
 
-    ret = ap6256_program_wpa2_psk_assoc_ie(self, wpa_auth);
+    if (wpa_auth == CYW43_WPA3_AUTH_SAE_PSK) {
+        mfp = MFP_REQUIRED;
+    } else if ((wpa_auth & CYW43_WPA3_AUTH_SAE_PSK) != 0U) {
+        mfp = MFP_CAPABLE;
+    } else if ((ap6256_join_channel_is_5g(channel) != 0U) &&
+               ((wpa_auth & CYW43_WPA2_AUTH_PSK) != 0U)) {
+        /*
+         * doorbelkin advertises WPA2/SAE transition with MFPC. We still choose
+         * WPA2-PSK/CCMP, but brcmfmac mirrors MFPC into the firmware mfp state
+         * when the selected BSS is capable. This keeps 5 GHz transition-mode
+         * association from looking like a non-PMF station to BCM43456.
+         */
+        mfp = MFP_CAPABLE;
+    }
+
+    ret = ap6256_program_wpa2_psk_assoc_ie(self, wpa_auth, mfp);
     if (ret != 0) {
         return ret;
     }
@@ -5144,17 +5160,7 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
         }
         ret = 0;
     }
-    {
-        uint32_t mfp = MFP_NONE;
-
-        if (wpa_auth == CYW43_WPA3_AUTH_SAE_PSK) {
-            mfp = MFP_REQUIRED;
-        } else if ((wpa_auth & CYW43_WPA3_AUTH_SAE_PSK) != 0U) {
-            mfp = MFP_CAPABLE;
-        }
-
-        ret = cyw43_write_iovar_u32(self, "mfp", mfp, WWD_STA_INTERFACE);
-    }
+    ret = cyw43_write_iovar_u32(self, "mfp", mfp, WWD_STA_INTERFACE);
     if (ret != 0) {
         if (!ap6256_join_no_response_ok(ret)) {
             return ret;
@@ -5184,6 +5190,18 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
             return ret;
         }
         ret = 0;
+    }
+
+    /*
+     * Re-apply the RSN IE after the firmware security context is fully
+     * programmed. brcmfmac installs the association IE as part of connect
+     * setup after choosing WPA/auth/wsec policy; AP6256 transition-mode APs
+     * can otherwise leave this MCU path with stale/default assoc capabilities
+     * by the time WLC_SET_SSID is issued.
+     */
+    ret = ap6256_program_wpa2_psk_assoc_ie(self, wpa_auth, mfp);
+    if (ret != 0) {
+        return ret;
     }
 
     if ((ap6256_join_channel_is_5g(channel) != 0U) &&
@@ -5262,29 +5280,44 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
     if ((AP6256_CYW43_5G_JOIN_SET_CHANNEL_STARTER != 0U) &&
         ((channel & CYW43_CHANNEL_CHANSPEC_FLAG) == 0U) &&
         (channel != CYW43_CHANNEL_NONE)) {
-        uint32_t join_band = (ap6256_join_channel_is_5g(channel) != 0U) ? 1U : 2U;
-
         /*
          * brcmfmac primes firmware with the requested channel before connect
-         * when cfg80211 supplies one. This is especially important for the
-         * AP6256 5 GHz path where the association payload is SSID-only to avoid
-         * the reset-prone directed BSSID/chanspec trigger, but it also restores
-         * the known-good 2.4 GHz channel-fixed flow.
+         * when cfg80211 supplies one. It does not also force the band here;
+         * keep band selection implicit so BCM43456 can use the directed
+         * chanspec/BSSID evidence in the following WLC_SET_SSID payload.
          */
-        ret = cyw43_set_ioctl_u32(self, WLC_SET_BAND, join_band, WWD_STA_INTERFACE);
-        if (ret != 0) {
-            if (!ap6256_join_no_response_ok(ret)) {
-                return ret;
-            }
-            ret = 0;
-        }
-
         ret = cyw43_set_ioctl_u32(self, WLC_SET_CHANNEL, channel, WWD_STA_INTERFACE);
         if (ret != 0) {
             if (!ap6256_join_no_response_ok(ret)) {
                 return ret;
             }
             ret = 0;
+        }
+    }
+
+    if ((bssid == NULL) &&
+        (ap6256_join_channel_is_5g(channel) != 0U) &&
+        (AP6256_CYW43_5G_BROADCAST_EXT_JOIN != 0U)) {
+        size_t ext_join_len = ap6256_build_brcmf_ext_join_params(buf,
+                                                                 sizeof(buf),
+                                                                 ssid_len,
+                                                                 ssid,
+                                                                 NULL,
+                                                                 channel);
+        if (ext_join_len == 0U) {
+            return -CYW43_EINVAL;
+        }
+
+        /*
+         * Broadcast-BSSID ext_join mirrors brcmfmac's channel-directed connect
+         * path without using the BSSID/chanspec payload shape that resets this
+         * AP6256 board. If firmware accepts the control TX, join completion is
+         * still proved by events/DHCP above this layer.
+         */
+        CYW43_VDEBUG("Join iovar broadcast 5g\n");
+        ret = cyw43_write_iovar_n(self, "join", ext_join_len, buf, WWD_STA_INTERFACE);
+        if (ret == 0) {
+            return 0;
         }
     }
 
