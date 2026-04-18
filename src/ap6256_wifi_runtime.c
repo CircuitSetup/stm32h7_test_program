@@ -28,7 +28,7 @@
 #define AP6256_WIFI_SCAN_FORCE_5G         (-5)
 #define AP6256_WIFI_CHANNEL_5G_UNKNOWN    0xFFFFU
 #define AP6256_WIFI_SCAN_RECOVERY_F2_BLOCK_SIZE 64U
-#define AP6256_WIFI_JOIN_F2_BLOCK_SIZE     512U
+#define AP6256_WIFI_JOIN_F2_BLOCK_SIZE     64U
 #define AP6256_WIFI_DIRECTED_5G_SCAN_TIMEOUT_MS 15000U
 #define AP6256_WIFI_PROFILE_BROAD_SCAN_TIMEOUT_MS 8000U
 /*
@@ -1959,15 +1959,19 @@ static uint32_t ap6256_wifi_runtime_select_auth(uint8_t security_flags,
      * only use mixed mode when the BSS really advertises WPA1/TKIP/mixed facts.
      *
      * BCM43456/AP6256 transition-mode APs advertise both PSK and SAE with
-     * optional MFP. Linux brcmfmac can service the CYW vendor external-auth
-     * events needed for SAE; this MCU runtime currently cannot. Prefer the
-     * WPA2/CCMP leg of a transition BSS unless PMF is required so we do not
-     * enter the reset-prone SAE/external-auth path on 5 GHz.
+     * optional MFP. Use the firmware transition auth value for PSK+SAE/MFPC
+     * BSSIDs: HIL showed this keeps the known-good 2.4 GHz path healthy and,
+     * unlike the WPA2-only 5 GHz path, lets doorbelkin fail cleanly instead of
+     * resetting immediately after WLC_SET_SSID. This mirrors brcmfmac's habit
+     * of programming the selected RSN/auth mode rather than flattening a
+     * transition BSS into a bare WPA2 association.
      */
     if ((has_sae != 0U) && (has_psk != 0U) && (mfp != CYW43_SCAN_MFP_REQUIRED)) {
         if ((has_ccmp != 0U) || (has_rsn != 0U)) {
-            (void)selected_5g;
-            return CYW43_AUTH_WPA2_AES_PSK;
+            if (selected_5g != 0U) {
+                return CYW43_AUTH_WPA2_AES_PSK;
+            }
+            return CYW43_AUTH_WPA3_WPA2_AES_PSK;
         }
     }
 
@@ -2371,15 +2375,12 @@ static ap6256_status_t ap6256_wifi_runtime_run_common(const char *ssid,
                          join_chanspec);
         if (ap6256_wifi_runtime_channel_is_5g(channel) != 0U) {
             /*
-             * The reset has followed every 5 GHz-specific association hint so
-             * far: directed brcmf_join_params, channel-hinted WLC_SET_SSID, and
-             * broadcast ext_join. Since this SSID is 5 GHz-only, use the same
-             * conservative scalar SSID-only WPA2 path that is proven on 2.4 GHz.
-             * The selected scan result is still retained in diagnostics, but we
-             * do not force one BSSID/chanspec until the firmware can start the
-             * association without resetting the host.
+             * First prove the 5 GHz association can be started without the
+             * transition-mode/SAE setup path. This deliberately mirrors the
+             * proven 2.4 GHz scalar WPA2 path: no BSSID payload, no channel
+             * hint, no SAE password, and no 5 GHz-specific association iovars.
              */
-            test_uart_write_str("[ INFO ] wifi.connect stage: ssid-only 5GHz no-hint join\r\n");
+            test_uart_write_str("[ INFO ] wifi.connect stage: ssid-only 5GHz conservative WPA2 join\r\n");
             join_bssid = NULL;
             validation_bssid = NULL;
             join_channel = CYW43_CHANNEL_NONE;
