@@ -576,11 +576,11 @@ static size_t __attribute__((unused)) ap6256_build_brcmf_ext_join_params(uint8_t
 #endif
 
 #ifndef AP6256_CYW43_5G_JOIN_QTXPOWER_QDBM
-#define AP6256_CYW43_5G_JOIN_QTXPOWER_QDBM           (0U)
+#define AP6256_CYW43_5G_JOIN_QTXPOWER_QDBM           (4U)
 #endif
 
 #ifndef AP6256_CYW43_5G_JOIN_SAFE_VHT_OFF
-#define AP6256_CYW43_5G_JOIN_SAFE_VHT_OFF            (0U)
+#define AP6256_CYW43_5G_JOIN_SAFE_VHT_OFF            (1U)
 #endif
 
 #ifndef AP6256_CYW43_5G_JOIN_SET_CHANNEL_STARTER
@@ -588,7 +588,7 @@ static size_t __attribute__((unused)) ap6256_build_brcmf_ext_join_params(uint8_t
 #endif
 
 #ifndef AP6256_CYW43_ABORT_SCAN_BEFORE_JOIN
-#define AP6256_CYW43_ABORT_SCAN_BEFORE_JOIN          (1U)
+#define AP6256_CYW43_ABORT_SCAN_BEFORE_JOIN          (0U)
 #endif
 
 #ifndef AP6256_CYW43_PROGRAM_ASSOC_WPAIE
@@ -4804,6 +4804,7 @@ static void cyw43_ap6256_build_sta_event_mask(uint8_t *mask, size_t mask_len) {
     cyw43_ap6256_event_mask_set(mask, CYW43_EV_CSA_COMPLETE_IND);
     cyw43_ap6256_event_mask_set(mask, CYW43_EV_ASSOC_REQ_IE);
     cyw43_ap6256_event_mask_set(mask, CYW43_EV_ASSOC_RESP_IE);
+    cyw43_ap6256_event_mask_set(mask, CYW43_EV_BCM43456_ASSOC_PROGRESS);
 }
 
 static int cyw43_ap6256_program_sta_event_mask(cyw43_int_t *self) {
@@ -5358,6 +5359,8 @@ static void ap6256_cyw43_populate_dual_band_scan(ap6256_cyw43_escan_options_t *s
                                                  const cyw43_wifi_scan_options_t *opts) {
     uint8_t force_5g = ((opts != NULL) &&
                         (opts->channel_num == AP6256_ESCAN_FORCE_5G_CHANNEL_NUM)) ? 1U : 0U;
+    uint32_t requested_channel = ((opts != NULL) && (opts->channel_num > 0)) ?
+        (uint32_t)opts->channel_num : 0U;
     uint32_t channel_count;
 
     memset(scan, 0, sizeof(*scan));
@@ -5382,7 +5385,16 @@ static void ap6256_cyw43_populate_dual_band_scan(ap6256_cyw43_escan_options_t *s
     scan->passive_time = -1;
     scan->home_time = -1;
 
-    if (force_5g != 0U) {
+    if (requested_channel != 0U) {
+        /*
+         * brcmfmac uses channel-scoped join scans when cfg80211 provides a
+         * target channel. Support the same shape here so the runtime can
+         * refresh firmware scan cache for one known BSSID/channel between
+         * candidate attempts without spending another full 5 GHz sweep.
+         */
+        scan->channel_list[0] = AP6256_CHSPEC_20MHZ(requested_channel);
+        scan->channel_num = 1;
+    } else if (force_5g != 0U) {
         /*
          * Directed 5 GHz scans need an explicit 5 GHz-only list so the firmware
          * sends probe requests on the relevant band. For normal visible scans,
@@ -5499,16 +5511,15 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
         ((wpa_auth & (CYW43_WPA_AUTH_PSK | CYW43_WPA2_AUTH_PSK)) != 0U);
 
     if ((bssid == NULL) &&
-        ((channel == CYW43_CHANNEL_NONE) ||
-         ((channel > 0U) && (ap6256_join_channel_is_5g(channel) == 0U))) &&
+        ((channel == CYW43_CHANNEL_NONE) || (channel > 0U)) &&
         ((auth_type == CYW43_AUTH_WPA2_AES_PSK) ||
          (auth_type == CYW43_AUTH_WPA2_MIXED_PSK) ||
          (auth_type == CYW43_AUTH_WPA_TKIP_PSK))) {
         /*
          * Conservative SSID-only association path used for the 2.4 GHz
-         * regression target. This mirrors the original CYW43 scalar setup and
-         * keeps the newer BCM43456 directed/transition-mode machinery out of
-         * plain WPA/WPA2 joins.
+         * regression target. Use the same scalar setup for 5 GHz WPA2-only
+         * SSID joins too: it avoids the reset-prone directed/transition
+         * machinery while still allowing a brcmfmac-style primary-channel hint.
          */
         ret = cyw43_set_ioctl_u32(self, WLC_SET_WSEC, auth_type & 0xffU, WWD_STA_INTERFACE);
         if ((ret != 0) && !ap6256_join_no_response_ok(ret)) {

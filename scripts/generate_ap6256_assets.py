@@ -15,6 +15,11 @@ RPI_7_84_17_1_BASE_URL = (
     "bullseye/debian/config/brcm80211/brcm"
 )
 RPI_7_84_17_1_DIR = "assets/ap6256/profiles/rpi_7_84_17_1"
+MANJARO_AP6256_BASE_URL = (
+    "https://gitlab.manjaro.org/manjaro-arm/packages/community/"
+    "ap6256-firmware/-/raw/master"
+)
+MANJARO_AP6256_DIR = "assets/ap6256/profiles/manjaro_ap6256_2020_02"
 
 COMMON_ASSETS = [
     {
@@ -147,6 +152,64 @@ WIFI_ASSET_PROFILES = {
                 "relative_path": "assets/ap6256/brcmfmac43456-sdio.txt",
                 "source_url": "repo:assets/ap6256/brcmfmac43456-sdio.txt",
                 "version_hint": "current-repo-generic",
+            },
+        ],
+    },
+    "current_bin_rpi_nvram": {
+        "description": "current repository firmware/CLM with Raspberry Pi 7.84.17.1 NVRAM",
+        "source_url": "repo:assets/ap6256 firmware/CLM + raspberrypi/firmware-nonfree NVRAM",
+        "firmware_version_hint": "current-repo",
+        "default_generic_nvram": 1,
+        "wifi": [
+            {
+                "macro": "WIFI_FIRMWARE",
+                "symbol": "wifi_firmware",
+                "relative_path": "assets/ap6256/brcmfmac43456-sdio.bin",
+                "source_url": "repo:assets/ap6256/brcmfmac43456-sdio.bin",
+                "version_hint": "current-repo",
+            },
+            {
+                "macro": "WIFI_CLM_BLOB",
+                "symbol": "wifi_clm_blob",
+                "relative_path": "assets/ap6256/brcmfmac43456-sdio.clm_blob",
+                "source_url": "repo:assets/ap6256/brcmfmac43456-sdio.clm_blob",
+                "version_hint": "current-repo",
+            },
+            {
+                "macro": "WIFI_NVRAM",
+                "symbol": "wifi_nvram",
+                "relative_path": f"{RPI_7_84_17_1_DIR}/brcmfmac43456-sdio.txt",
+                "source_url": f"{RPI_7_84_17_1_BASE_URL}/brcmfmac43456-sdio.txt",
+                "version_hint": "7.84.17.1-rpi",
+            },
+        ],
+    },
+    "manjaro_ap6256_2020_02_coherent": {
+        "description": "Manjaro AP6256 firmware package, coherent firmware/CLM/AP6256 NVRAM",
+        "source_url": MANJARO_AP6256_BASE_URL,
+        "firmware_version_hint": "7.45.96.61-ap6256",
+        "default_generic_nvram": 1,
+        "wifi": [
+            {
+                "macro": "WIFI_FIRMWARE",
+                "symbol": "wifi_firmware",
+                "relative_path": f"{MANJARO_AP6256_DIR}/brcmfmac43456-sdio.bin",
+                "source_url": f"{MANJARO_AP6256_BASE_URL}/fw_bcm43456c5_ag.bin",
+                "version_hint": "7.45.96.61-ap6256",
+            },
+            {
+                "macro": "WIFI_CLM_BLOB",
+                "symbol": "wifi_clm_blob",
+                "relative_path": f"{MANJARO_AP6256_DIR}/brcmfmac43456-sdio.clm_blob",
+                "source_url": f"{MANJARO_AP6256_BASE_URL}/brcmfmac43456-sdio.clm_blob",
+                "version_hint": "7.45.96.61-ap6256",
+            },
+            {
+                "macro": "WIFI_NVRAM",
+                "symbol": "wifi_nvram",
+                "relative_path": f"{MANJARO_AP6256_DIR}/brcmfmac43456-sdio.AP6256.txt",
+                "source_url": f"{MANJARO_AP6256_BASE_URL}/brcmfmac43456-sdio.AP6256.txt",
+                "version_hint": "ap6256-manjaro",
             },
         ],
     },

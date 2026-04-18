@@ -13,6 +13,7 @@ RPI_BASE_URL = (
     "bullseye/debian/config/brcm80211/brcm"
 )
 RPI_PROFILE_DIR = REPO_ROOT / "assets" / "ap6256" / "profiles" / "rpi_7_84_17_1"
+MANJARO_PROFILE_DIR = REPO_ROOT / "assets" / "ap6256" / "profiles" / "manjaro_ap6256_2020_02"
 
 PROFILES = {
     "current_repo": [
@@ -37,6 +38,16 @@ PROFILES = {
         "assets/ap6256/profiles/rpi_7_84_17_1/brcmfmac43456-sdio.clm_blob",
         "assets/ap6256/brcmfmac43456-sdio.txt",
         "assets/ap6256/reference/nvram_ap6256.txt",
+    ],
+    "current_bin_rpi_nvram": [
+        "assets/ap6256/brcmfmac43456-sdio.bin",
+        "assets/ap6256/brcmfmac43456-sdio.clm_blob",
+        "assets/ap6256/profiles/rpi_7_84_17_1/brcmfmac43456-sdio.txt",
+    ],
+    "manjaro_ap6256_2020_02_coherent": [
+        "assets/ap6256/profiles/manjaro_ap6256_2020_02/brcmfmac43456-sdio.bin",
+        "assets/ap6256/profiles/manjaro_ap6256_2020_02/brcmfmac43456-sdio.clm_blob",
+        "assets/ap6256/profiles/manjaro_ap6256_2020_02/brcmfmac43456-sdio.AP6256.txt",
     ],
 }
 

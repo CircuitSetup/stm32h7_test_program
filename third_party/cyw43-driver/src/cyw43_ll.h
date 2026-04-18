@@ -80,6 +80,8 @@
 #define CYW43_EV_CSA_COMPLETE_IND       (80)
 #define CYW43_EV_ASSOC_REQ_IE           (87)
 #define CYW43_EV_ASSOC_RESP_IE          (88)
+// BCM43456/AP6256 firmwares emit this during 5 GHz association progress.
+#define CYW43_EV_BCM43456_ASSOC_PROGRESS (124)
 
 // Event status values
 #define CYW43_STATUS_SUCCESS            (0)

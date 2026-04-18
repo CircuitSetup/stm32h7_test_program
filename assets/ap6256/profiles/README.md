@@ -17,6 +17,12 @@ Known profile order for HIL testing:
 3. `rpi_7_84_17_1_coherent`
 4. `current_bin_rpi_clm`
 
+Isolation profile used when the reset behavior differs between AP6256 and
+coherent Raspberry Pi NVRAM:
+
+- `current_bin_rpi_nvram`
+- `manjaro_ap6256_2020_02_coherent`
+
 Fetch and validate optional Raspberry Pi candidate assets with:
 
 ```powershell

@@ -308,7 +308,7 @@ void cyw43_cb_ensure_awake(void *cb_data) {
     #endif
 }
 
-static const char *const cyw43_async_event_name_table[89] = {
+static const char *const cyw43_async_event_name_table[125] = {
     //[0 ... 88] = NULL,
     [CYW43_EV_SET_SSID] = "SET_SSID",
     [CYW43_EV_JOIN] = "JOIN",
@@ -323,6 +323,7 @@ static const char *const cyw43_async_event_name_table[89] = {
     [CYW43_EV_CSA_COMPLETE_IND] = "CSA_COMPLETE_IND",
     [CYW43_EV_ASSOC_REQ_IE] = "ASSOC_REQ_IE",
     [CYW43_EV_ASSOC_RESP_IE] = "ASSOC_RESP_IE",
+    [CYW43_EV_BCM43456_ASSOC_PROGRESS] = "BCM43456_ASSOC_PROGRESS",
 };
 
 static void cyw43_dump_async_event(const cyw43_async_event_t *ev) {
@@ -359,6 +360,7 @@ void cyw43_cb_process_async_event(void *cb_data, const cyw43_async_event_t *ev) 
     case CYW43_EV_LINK:
     case CYW43_EV_PRUNE:
     case CYW43_EV_PSK_SUP:
+    case CYW43_EV_BCM43456_ASSOC_PROGRESS:
         ap6256_cyw43_port_record_join_event(ev->event_type, ev->status, ev->reason, ev->flags);
         break;
     default:
@@ -453,6 +455,21 @@ void cyw43_cb_process_async_event(void *cb_data, const cyw43_async_event_t *ev) 
             self->wifi_join_state |= WIFI_JOIN_STATE_AUTH | WIFI_JOIN_STATE_LINK;
         } else if (ev->status == 3 && ev->reason == 0) {
             self->wifi_join_state = WIFI_JOIN_STATE_NONET;
+        } else {
+            self->wifi_join_state = WIFI_JOIN_STATE_FAIL;
+        }
+    } else if (ev->event_type == CYW43_EV_BCM43456_ASSOC_PROGRESS) {
+        if (ev->status == 0) {
+            /*
+             * Some BCM43456 firmware builds report 5 GHz association/key
+             * progress with event 124 rather than the older SET_SSID/ASSOC/
+             * PSK_SUP sequence CYW43 knows about. Treat the successful event as
+             * enough evidence to release lwIP/DHCP; later DEAUTH/PSK failures
+             * still pull the link back down through their normal handlers.
+             */
+            self->wifi_join_state |= WIFI_JOIN_STATE_AUTH |
+                                     WIFI_JOIN_STATE_LINK |
+                                     WIFI_JOIN_STATE_KEYED;
         } else {
             self->wifi_join_state = WIFI_JOIN_STATE_FAIL;
         }
