@@ -26,11 +26,18 @@ static void ap6256_connectivity_print_asset_line(const char *label,
         return;
     }
 
-    test_uart_printf("  %s: %s size=%lu sha256=%s\r\n",
+    test_uart_printf("  %s: %s size=%lu sha256=%s",
                      label,
                      asset->filename,
                      (unsigned long)asset->size,
                      asset->sha256);
+    if ((asset->version_hint != NULL) && (asset->version_hint[0] != '\0')) {
+        test_uart_printf(" ver=%s", asset->version_hint);
+    }
+    if ((asset->source_url != NULL) && (asset->source_url[0] != '\0')) {
+        test_uart_printf(" src=%s", asset->source_url);
+    }
+    test_uart_write_str("\r\n");
 }
 
 static void ap6256_connectivity_copy_text(char *dst, size_t dst_len, const char *src)
@@ -388,6 +395,8 @@ void ap6256_connectivity_set_wifi_phy_diag(uint8_t valid,
                                            uint32_t nmode,
                                            uint32_t band,
                                            const char *fw_version,
+                                           const char *clm_version,
+                                           const char *country,
                                            const char *caps)
 {
     s_wifi_state.runtime_phy_valid = valid;
@@ -402,6 +411,12 @@ void ap6256_connectivity_set_wifi_phy_diag(uint8_t valid,
     ap6256_connectivity_copy_text(s_wifi_state.runtime_fw_version,
                                   sizeof(s_wifi_state.runtime_fw_version),
                                   fw_version);
+    ap6256_connectivity_copy_text(s_wifi_state.runtime_clm_version,
+                                  sizeof(s_wifi_state.runtime_clm_version),
+                                  clm_version);
+    ap6256_connectivity_copy_text(s_wifi_state.runtime_country,
+                                  sizeof(s_wifi_state.runtime_country),
+                                  country);
     ap6256_connectivity_copy_text(s_wifi_state.runtime_caps,
                                   sizeof(s_wifi_state.runtime_caps),
                                   caps);
@@ -836,8 +851,10 @@ void ap6256_connectivity_print_wifi_info(void)
                      state->runtime_wifi5_capable,
                      state->runtime_assoc_wifi5,
                      (unsigned long)state->runtime_band);
-    test_uart_printf("  Wi-Fi FW/caps: ver='%s' caps='%s'\r\n",
+    test_uart_printf("  Wi-Fi FW/caps: ver='%s' clm='%s' country='%s' caps='%s'\r\n",
                      (state->runtime_fw_version[0] != '\0') ? state->runtime_fw_version : "n/a",
+                     (state->runtime_clm_version[0] != '\0') ? state->runtime_clm_version : "n/a",
+                     (state->runtime_country[0] != '\0') ? state->runtime_country : "n/a",
                      (state->runtime_caps[0] != '\0') ? state->runtime_caps : "n/a");
     test_uart_printf("  CYW43 compat: chip=0x%04X rev=%u raw=0x%08lX rambase=0x%05lX ram=0x%05lX stage=%lu/%s profile=%s nvram=%s %lu/%lu footer=0x%08lX\r\n",
                      ap6256_cyw43_chip_id_from_raw(state->runtime_chip_id_raw),
@@ -1044,10 +1061,15 @@ void ap6256_connectivity_print_wifi_info(void)
     test_uart_printf("  Cached session profile: %u\r\n",
                      ap6256_wifi_runtime_has_cached_profile());
     test_uart_printf("  Embedded assets ready: %u\r\n", state->assets_ready);
+    test_uart_printf("  Wi-Fi asset profile: name=%s default_nvram=%s fw_hint=%s src=%s\r\n",
+                     ap6256_assets_wifi_profile_name(),
+                     (ap6256_assets_wifi_profile_default_generic_nvram() != 0U) ? "profile" : "ap6256",
+                     ap6256_assets_wifi_profile_firmware_version_hint(),
+                     ap6256_assets_wifi_profile_source_url());
     ap6256_connectivity_print_asset_line("Wi-Fi FW", ap6256_assets_wifi_firmware());
     ap6256_connectivity_print_asset_line("Wi-Fi CLM", ap6256_assets_wifi_clm_blob());
-    ap6256_connectivity_print_asset_line("Wi-Fi NVRAM (manual fallback)", ap6256_assets_wifi_nvram());
-    ap6256_connectivity_print_asset_line("Wi-Fi NVRAM (runtime default)", ap6256_assets_reference_nvram());
+    ap6256_connectivity_print_asset_line("Wi-Fi NVRAM (profile/generic)", ap6256_assets_wifi_nvram());
+    ap6256_connectivity_print_asset_line("Wi-Fi NVRAM (AP6256 module)", ap6256_assets_reference_nvram());
     test_uart_printf("  Radio owner: %s\r\n",
                      network_manager_owner_name(network_manager_get_owner()));
     test_uart_printf("  Full stack ready: %u\r\n",

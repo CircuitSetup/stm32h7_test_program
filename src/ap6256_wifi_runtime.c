@@ -2205,6 +2205,8 @@ static uint8_t ap6256_wifi_runtime_capture_phy_diag(uint16_t selected_channel,
 {
     uint8_t buf[160];
     char fw_version[96];
+    char clm_version[96];
+    char country_text[32];
     char caps[128];
     uint32_t vhtmode = 0U;
     uint32_t nmode = 0U;
@@ -2217,6 +2219,8 @@ static uint8_t ap6256_wifi_runtime_capture_phy_diag(uint16_t selected_channel,
     uint8_t valid = 0U;
 
     memset(fw_version, 0, sizeof(fw_version));
+    memset(clm_version, 0, sizeof(clm_version));
+    memset(country_text, 0, sizeof(country_text));
     memset(caps, 0, sizeof(caps));
 
     if (ap6256_wifi_runtime_get_iovar_raw("ver", buf, sizeof(buf)) == 0) {
@@ -2225,6 +2229,18 @@ static uint8_t ap6256_wifi_runtime_capture_phy_diag(uint16_t selected_channel,
     }
     if (ap6256_wifi_runtime_get_iovar_raw("cap", buf, sizeof(buf)) == 0) {
         ap6256_wifi_runtime_copy_printable(caps, sizeof(caps), buf, sizeof(buf));
+        valid = 1U;
+    }
+    if (ap6256_wifi_runtime_get_iovar_raw("clmver", buf, sizeof(buf)) == 0) {
+        ap6256_wifi_runtime_copy_printable(clm_version, sizeof(clm_version), buf, sizeof(buf));
+        valid = 1U;
+    }
+    if (ap6256_wifi_runtime_get_iovar_raw("country", buf, sizeof(buf)) == 0) {
+        char c0 = ((buf[0] >= 0x20U) && (buf[0] <= 0x7EU)) ? (char)buf[0] : '?';
+        char c1 = ((buf[1] >= 0x20U) && (buf[1] <= 0x7EU)) ? (char)buf[1] : '?';
+        uint32_t rev = ap6256_wifi_runtime_get_le32(&buf[4]);
+
+        (void)snprintf(country_text, sizeof(country_text), "%c%c/%lu", c0, c1, (unsigned long)rev);
         valid = 1U;
     }
     if (ap6256_wifi_runtime_get_iovar_u32("vhtmode", &vhtmode) == 0) {
@@ -2261,6 +2277,8 @@ static uint8_t ap6256_wifi_runtime_capture_phy_diag(uint16_t selected_channel,
                                           nmode,
                                           band,
                                           fw_version,
+                                          clm_version,
+                                          country_text,
                                           caps);
     test_uart_printf("[ INFO ] wifi.connect stage: phy diag ch=%u/%s chanspec=0x%04lX nmode=%lu vhtmode=%lu wifi5_capable=%u assoc_wifi5=%u\r\n",
                      assoc_channel,

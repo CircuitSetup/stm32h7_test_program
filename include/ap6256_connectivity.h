@@ -54,6 +54,8 @@ typedef struct {
     uint32_t runtime_nmode;
     uint32_t runtime_band;
     char runtime_fw_version[96];
+    char runtime_clm_version[96];
+    char runtime_country[32];
     char runtime_caps[128];
     uint32_t runtime_chip_id_raw;
     uint32_t runtime_ram_base_addr;
@@ -212,6 +214,8 @@ void ap6256_connectivity_set_wifi_phy_diag(uint8_t valid,
                                            uint32_t nmode,
                                            uint32_t band,
                                            const char *fw_version,
+                                           const char *clm_version,
+                                           const char *country,
                                            const char *caps);
 void ap6256_connectivity_set_wifi_compat(uint32_t chip_id_raw,
                                          uint32_t ram_base_addr,

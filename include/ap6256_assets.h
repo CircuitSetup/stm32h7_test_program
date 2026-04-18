@@ -17,10 +17,17 @@ typedef struct {
     const char *tag;
     const char *filename;
     const char *sha256;
+    const char *source_url;
+    const char *version_hint;
     uint32_t size;
     const uint8_t *data;
 } ap6256_embedded_asset_t;
 
+const char *ap6256_assets_wifi_profile_name(void);
+const char *ap6256_assets_wifi_profile_description(void);
+const char *ap6256_assets_wifi_profile_source_url(void);
+const char *ap6256_assets_wifi_profile_firmware_version_hint(void);
+uint8_t ap6256_assets_wifi_profile_default_generic_nvram(void);
 const ap6256_embedded_asset_t *ap6256_assets_get(ap6256_asset_id_t id);
 const ap6256_embedded_asset_t *ap6256_assets_wifi_firmware(void);
 const ap6256_embedded_asset_t *ap6256_assets_wifi_clm_blob(void);

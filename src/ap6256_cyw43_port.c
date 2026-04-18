@@ -3,6 +3,7 @@
 #include "ap6256_cyw43_compat.h"
 #include "ap6256_driver.h"
 #include "cyw43_configport.h"
+#include "generated/ap6256_assets_manifest.h"
 #include "main.h"
 
 #include "cmsis_os2.h"
@@ -95,11 +96,12 @@ static volatile uint32_t s_cyw43_backplane_address;
 static volatile uint8_t s_cyw43_backplane_width_bytes;
 static volatile int32_t s_cyw43_backplane_status;
 /*
- * Runtime default: AP6256-specific nvram_ap6256.txt. The generic
- * brcmfmac43456-sdio.txt remains available through the console toggle for
- * bench A/B, but 5 GHz TX/FEM/regulatory behavior should use the module NVRAM.
+ * Runtime default: profile-selected. current_repo and most bench profiles use
+ * AP6256-specific nvram_ap6256.txt; coherent firmware/NVRAM profiles can opt
+ * into their bundled text file without changing the public console command.
  */
-static volatile uint8_t s_cyw43_reference_nvram_enabled = 0U;
+static volatile uint8_t s_cyw43_reference_nvram_enabled =
+    (AP6256_ASSET_WIFI_PROFILE_DEFAULT_GENERIC_NVRAM != 0U) ? 1U : 0U;
 static volatile uint32_t s_cyw43_last_async_event_type;
 static volatile uint32_t s_cyw43_last_async_event_status;
 static volatile uint32_t s_cyw43_last_async_event_reason;

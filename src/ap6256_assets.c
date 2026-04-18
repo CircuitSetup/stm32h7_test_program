@@ -10,6 +10,8 @@ static const ap6256_embedded_asset_t s_assets[AP6256_ASSET_COUNT] = {
         "wifi_fw",
         AP6256_ASSET_WIFI_FIRMWARE_FILENAME,
         AP6256_ASSET_WIFI_FIRMWARE_SHA256,
+        AP6256_ASSET_WIFI_FIRMWARE_SOURCE_URL,
+        AP6256_ASSET_WIFI_FIRMWARE_VERSION_HINT,
         AP6256_ASSET_WIFI_FIRMWARE_SIZE,
         ap6256_asset_wifi_firmware_start
     },
@@ -18,6 +20,8 @@ static const ap6256_embedded_asset_t s_assets[AP6256_ASSET_COUNT] = {
         "wifi_clm",
         AP6256_ASSET_WIFI_CLM_BLOB_FILENAME,
         AP6256_ASSET_WIFI_CLM_BLOB_SHA256,
+        AP6256_ASSET_WIFI_CLM_BLOB_SOURCE_URL,
+        AP6256_ASSET_WIFI_CLM_BLOB_VERSION_HINT,
         AP6256_ASSET_WIFI_CLM_BLOB_SIZE,
         ap6256_asset_wifi_clm_blob_start
     },
@@ -26,6 +30,8 @@ static const ap6256_embedded_asset_t s_assets[AP6256_ASSET_COUNT] = {
         "wifi_nvram",
         AP6256_ASSET_WIFI_NVRAM_FILENAME,
         AP6256_ASSET_WIFI_NVRAM_SHA256,
+        AP6256_ASSET_WIFI_NVRAM_SOURCE_URL,
+        AP6256_ASSET_WIFI_NVRAM_VERSION_HINT,
         AP6256_ASSET_WIFI_NVRAM_SIZE,
         ap6256_asset_wifi_nvram_start
     },
@@ -34,6 +40,8 @@ static const ap6256_embedded_asset_t s_assets[AP6256_ASSET_COUNT] = {
         "bt_patchram",
         AP6256_ASSET_BT_PATCHRAM_FILENAME,
         AP6256_ASSET_BT_PATCHRAM_SHA256,
+        AP6256_ASSET_BT_PATCHRAM_SOURCE_URL,
+        AP6256_ASSET_BT_PATCHRAM_VERSION_HINT,
         AP6256_ASSET_BT_PATCHRAM_SIZE,
         ap6256_asset_bt_patchram_start
     },
@@ -42,10 +50,37 @@ static const ap6256_embedded_asset_t s_assets[AP6256_ASSET_COUNT] = {
         "wifi_nvram_reference",
         AP6256_ASSET_WIFI_NVRAM_REFERENCE_FILENAME,
         AP6256_ASSET_WIFI_NVRAM_REFERENCE_SHA256,
+        AP6256_ASSET_WIFI_NVRAM_REFERENCE_SOURCE_URL,
+        AP6256_ASSET_WIFI_NVRAM_REFERENCE_VERSION_HINT,
         AP6256_ASSET_WIFI_NVRAM_REFERENCE_SIZE,
         ap6256_asset_wifi_nvram_reference_start
     }
 };
+
+const char *ap6256_assets_wifi_profile_name(void)
+{
+    return AP6256_ASSET_WIFI_PROFILE_NAME;
+}
+
+const char *ap6256_assets_wifi_profile_description(void)
+{
+    return AP6256_ASSET_WIFI_PROFILE_DESCRIPTION;
+}
+
+const char *ap6256_assets_wifi_profile_source_url(void)
+{
+    return AP6256_ASSET_WIFI_PROFILE_SOURCE_URL;
+}
+
+const char *ap6256_assets_wifi_profile_firmware_version_hint(void)
+{
+    return AP6256_ASSET_WIFI_PROFILE_FIRMWARE_VERSION_HINT;
+}
+
+uint8_t ap6256_assets_wifi_profile_default_generic_nvram(void)
+{
+    return (AP6256_ASSET_WIFI_PROFILE_DEFAULT_GENERIC_NVRAM != 0U) ? 1U : 0U;
+}
 
 const ap6256_embedded_asset_t *ap6256_assets_get(ap6256_asset_id_t id)
 {
