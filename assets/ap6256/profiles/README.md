@@ -15,13 +15,20 @@ Known profile order for HIL testing:
 1. `current_repo`
 2. `rpi_7_84_17_1_ap6256_nvram`
 3. `rpi_7_84_17_1_coherent`
-4. `current_bin_rpi_clm`
+4. `rpi_7_84_17_1_coherent_us`
+5. `rpi_7_84_17_1_safe5g_ap6256_nvram`
+6. `current_bin_rpi_clm`
 
 Isolation profile used when the reset behavior differs between AP6256 and
 coherent Raspberry Pi NVRAM:
 
 - `current_bin_rpi_nvram`
 - `manjaro_ap6256_2020_02_coherent`
+- `current_repo_safe5g_ap6256_nvram`
+
+The `safe5g` NVRAM is a HIL-only AP6256 variant that preserves the AP6256
+identity and 2.4GHz calibration while lowering 5GHz max power and using the
+less aggressive 5GHz switch map from reset-free coherent RPi runs.
 
 Fetch and validate optional Raspberry Pi candidate assets with:
 

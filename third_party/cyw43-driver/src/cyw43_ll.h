@@ -80,6 +80,13 @@
 #define CYW43_EV_CSA_COMPLETE_IND       (80)
 #define CYW43_EV_ASSOC_REQ_IE           (87)
 #define CYW43_EV_ASSOC_RESP_IE          (88)
+/*
+ * BCM43456/AP6256 firmware 7.84.17.1 has been observed to emit event 76 with
+ * status 6 immediately after association. brcmfmac supports per-firmware event
+ * maps; use this local alias as the firmware-supplicant completion event for
+ * this chip family while preserving the standard PSK_SUP(46) path.
+ */
+#define CYW43_EV_BCM43456_PSK_SUP_ALT   (76)
 // BCM43456/AP6256 firmwares emit this during 5 GHz association progress.
 #define CYW43_EV_BCM43456_ASSOC_PROGRESS (124)
 

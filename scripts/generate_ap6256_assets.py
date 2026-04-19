@@ -20,6 +20,7 @@ MANJARO_AP6256_BASE_URL = (
     "ap6256-firmware/-/raw/master"
 )
 MANJARO_AP6256_DIR = "assets/ap6256/profiles/manjaro_ap6256_2020_02"
+HYBRID_AP6256_DIR = "assets/ap6256/profiles/hybrid_ap6256_safe5g"
 
 COMMON_ASSETS = [
     {
@@ -123,6 +124,93 @@ WIFI_ASSET_PROFILES = {
                 "relative_path": f"{RPI_7_84_17_1_DIR}/brcmfmac43456-sdio.txt",
                 "source_url": f"{RPI_7_84_17_1_BASE_URL}/brcmfmac43456-sdio.txt",
                 "version_hint": "7.84.17.1-rpi",
+            },
+        ],
+    },
+    "rpi_7_84_17_1_coherent_us": {
+        "description": "Raspberry Pi BCM43456 7.84.17.1 coherent firmware/CLM/NVRAM with explicit US country",
+        "source_url": f"{RPI_7_84_17_1_BASE_URL} + repo US NVRAM overlay",
+        "firmware_version_hint": "7.84.17.1",
+        "default_generic_nvram": 1,
+        "wifi": [
+            {
+                "macro": "WIFI_FIRMWARE",
+                "symbol": "wifi_firmware",
+                "relative_path": f"{RPI_7_84_17_1_DIR}/brcmfmac43456-sdio.bin",
+                "source_url": f"{RPI_7_84_17_1_BASE_URL}/brcmfmac43456-sdio.bin",
+                "version_hint": "7.84.17.1",
+            },
+            {
+                "macro": "WIFI_CLM_BLOB",
+                "symbol": "wifi_clm_blob",
+                "relative_path": f"{RPI_7_84_17_1_DIR}/brcmfmac43456-sdio.clm_blob",
+                "source_url": f"{RPI_7_84_17_1_BASE_URL}/brcmfmac43456-sdio.clm_blob",
+                "version_hint": "7.84.17.1",
+            },
+            {
+                "macro": "WIFI_NVRAM",
+                "symbol": "wifi_nvram",
+                "relative_path": f"{RPI_7_84_17_1_DIR}/brcmfmac43456-sdio-us.txt",
+                "source_url": "repo:assets/ap6256/profiles/rpi_7_84_17_1/brcmfmac43456-sdio-us.txt",
+                "version_hint": "7.84.17.1-rpi-us",
+            },
+        ],
+    },
+    "rpi_7_84_17_1_safe5g_ap6256_nvram": {
+        "description": "Raspberry Pi BCM43456 7.84.17.1 firmware/CLM with AP6256 conservative 5GHz NVRAM",
+        "source_url": f"{RPI_7_84_17_1_BASE_URL} + repo AP6256 safe5g NVRAM",
+        "firmware_version_hint": "7.84.17.1",
+        "default_generic_nvram": 1,
+        "wifi": [
+            {
+                "macro": "WIFI_FIRMWARE",
+                "symbol": "wifi_firmware",
+                "relative_path": f"{RPI_7_84_17_1_DIR}/brcmfmac43456-sdio.bin",
+                "source_url": f"{RPI_7_84_17_1_BASE_URL}/brcmfmac43456-sdio.bin",
+                "version_hint": "7.84.17.1",
+            },
+            {
+                "macro": "WIFI_CLM_BLOB",
+                "symbol": "wifi_clm_blob",
+                "relative_path": f"{RPI_7_84_17_1_DIR}/brcmfmac43456-sdio.clm_blob",
+                "source_url": f"{RPI_7_84_17_1_BASE_URL}/brcmfmac43456-sdio.clm_blob",
+                "version_hint": "7.84.17.1",
+            },
+            {
+                "macro": "WIFI_NVRAM",
+                "symbol": "wifi_nvram",
+                "relative_path": f"{HYBRID_AP6256_DIR}/nvram_ap6256_safe5g.txt",
+                "source_url": "repo:assets/ap6256/profiles/hybrid_ap6256_safe5g/nvram_ap6256_safe5g.txt",
+                "version_hint": "ap6256-safe5g",
+            },
+        ],
+    },
+    "current_repo_safe5g_ap6256_nvram": {
+        "description": "current repository firmware/CLM with AP6256 conservative 5GHz NVRAM",
+        "source_url": "repo:assets/ap6256 + repo AP6256 safe5g NVRAM",
+        "firmware_version_hint": "current-repo",
+        "default_generic_nvram": 1,
+        "wifi": [
+            {
+                "macro": "WIFI_FIRMWARE",
+                "symbol": "wifi_firmware",
+                "relative_path": "assets/ap6256/brcmfmac43456-sdio.bin",
+                "source_url": "repo:assets/ap6256/brcmfmac43456-sdio.bin",
+                "version_hint": "current-repo",
+            },
+            {
+                "macro": "WIFI_CLM_BLOB",
+                "symbol": "wifi_clm_blob",
+                "relative_path": "assets/ap6256/brcmfmac43456-sdio.clm_blob",
+                "source_url": "repo:assets/ap6256/brcmfmac43456-sdio.clm_blob",
+                "version_hint": "current-repo",
+            },
+            {
+                "macro": "WIFI_NVRAM",
+                "symbol": "wifi_nvram",
+                "relative_path": f"{HYBRID_AP6256_DIR}/nvram_ap6256_safe5g.txt",
+                "source_url": "repo:assets/ap6256/profiles/hybrid_ap6256_safe5g/nvram_ap6256_safe5g.txt",
+                "version_hint": "ap6256-safe5g",
             },
         ],
     },

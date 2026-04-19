@@ -14,6 +14,7 @@ RPI_BASE_URL = (
 )
 RPI_PROFILE_DIR = REPO_ROOT / "assets" / "ap6256" / "profiles" / "rpi_7_84_17_1"
 MANJARO_PROFILE_DIR = REPO_ROOT / "assets" / "ap6256" / "profiles" / "manjaro_ap6256_2020_02"
+HYBRID_AP6256_DIR = REPO_ROOT / "assets" / "ap6256" / "profiles" / "hybrid_ap6256_safe5g"
 
 PROFILES = {
     "current_repo": [
@@ -32,6 +33,21 @@ PROFILES = {
         "assets/ap6256/profiles/rpi_7_84_17_1/brcmfmac43456-sdio.bin",
         "assets/ap6256/profiles/rpi_7_84_17_1/brcmfmac43456-sdio.clm_blob",
         "assets/ap6256/profiles/rpi_7_84_17_1/brcmfmac43456-sdio.txt",
+    ],
+    "rpi_7_84_17_1_coherent_us": [
+        "assets/ap6256/profiles/rpi_7_84_17_1/brcmfmac43456-sdio.bin",
+        "assets/ap6256/profiles/rpi_7_84_17_1/brcmfmac43456-sdio.clm_blob",
+        "assets/ap6256/profiles/rpi_7_84_17_1/brcmfmac43456-sdio-us.txt",
+    ],
+    "rpi_7_84_17_1_safe5g_ap6256_nvram": [
+        "assets/ap6256/profiles/rpi_7_84_17_1/brcmfmac43456-sdio.bin",
+        "assets/ap6256/profiles/rpi_7_84_17_1/brcmfmac43456-sdio.clm_blob",
+        "assets/ap6256/profiles/hybrid_ap6256_safe5g/nvram_ap6256_safe5g.txt",
+    ],
+    "current_repo_safe5g_ap6256_nvram": [
+        "assets/ap6256/brcmfmac43456-sdio.bin",
+        "assets/ap6256/brcmfmac43456-sdio.clm_blob",
+        "assets/ap6256/profiles/hybrid_ap6256_safe5g/nvram_ap6256_safe5g.txt",
     ],
     "current_bin_rpi_clm": [
         "assets/ap6256/brcmfmac43456-sdio.bin",

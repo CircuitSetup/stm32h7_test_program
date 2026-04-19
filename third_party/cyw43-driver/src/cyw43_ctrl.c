@@ -200,10 +200,13 @@ static int cyw43_ensure_up(cyw43_t *self) {
         return ret;
     }
 
-    #if CYW43_USE_OTP_MAC
-    // Get our mac address cyw43_hal_get_mac can get this from cyw43_state.mac
+    /*
+     * Keep the lwIP/netif source MAC identical to the FullMAC firmware's STA
+     * address. AP6256 firmware profiles may carry an NVRAM macaddr and the
+     * cur_etheraddr write can be profile-dependent; read back the value that
+     * the dongle will actually use on-air before the TCP/IP netif is created.
+     */
     cyw43_ll_wifi_get_mac(&self->cyw43_ll, self->mac);
-    #endif
 
     CYW43_DEBUG("cyw43 loaded ok, mac %02x:%02x:%02x:%02x:%02x:%02x\n",
         self->mac[0], self->mac[1], self->mac[2], self->mac[3], self->mac[4], self->mac[5]);
@@ -320,6 +323,7 @@ static const char *const cyw43_async_event_name_table[125] = {
     [CYW43_EV_LINK] = "LINK",
     [CYW43_EV_PSK_SUP] = "PSK_SUP",
     [CYW43_EV_ESCAN_RESULT] = "ESCAN_RESULT",
+    [CYW43_EV_BCM43456_PSK_SUP_ALT] = "BCM43456_PSK_SUP_ALT",
     [CYW43_EV_CSA_COMPLETE_IND] = "CSA_COMPLETE_IND",
     [CYW43_EV_ASSOC_REQ_IE] = "ASSOC_REQ_IE",
     [CYW43_EV_ASSOC_RESP_IE] = "ASSOC_RESP_IE",
@@ -360,6 +364,7 @@ void cyw43_cb_process_async_event(void *cb_data, const cyw43_async_event_t *ev) 
     case CYW43_EV_LINK:
     case CYW43_EV_PRUNE:
     case CYW43_EV_PSK_SUP:
+    case CYW43_EV_BCM43456_PSK_SUP_ALT:
     case CYW43_EV_BCM43456_ASSOC_PROGRESS:
         ap6256_cyw43_port_record_join_event(ev->event_type, ev->status, ev->reason, ev->flags);
         break;
@@ -461,15 +466,17 @@ void cyw43_cb_process_async_event(void *cb_data, const cyw43_async_event_t *ev) 
     } else if (ev->event_type == CYW43_EV_BCM43456_ASSOC_PROGRESS) {
         if (ev->status == 0) {
             /*
-             * Some BCM43456 firmware builds report 5 GHz association/key
-             * progress with event 124 rather than the older SET_SSID/ASSOC/
-             * PSK_SUP sequence CYW43 knows about. Treat the successful event as
-             * enough evidence to release lwIP/DHCP; later DEAUTH/PSK failures
-             * still pull the link back down through their normal handlers.
+             * Event 124 is not PSK_SUP in brcmfmac's public firmware-event
+             * enum. Older AP6256 experiments treated it as key completion,
+             * which can start DHCP while the WPA four-way handshake is still
+             * only at M1/EAPOL. Keep it as link-level progress only; DHCP must
+             * wait for PSK_SUP completion or another real keyed signal.
              */
-            self->wifi_join_state |= WIFI_JOIN_STATE_AUTH |
-                                     WIFI_JOIN_STATE_LINK |
-                                     WIFI_JOIN_STATE_KEYED;
+            self->wifi_join_state =
+                (self->wifi_join_state & ~WIFI_JOIN_STATE_KIND_MASK) |
+                WIFI_JOIN_STATE_ACTIVE |
+                WIFI_JOIN_STATE_AUTH |
+                WIFI_JOIN_STATE_LINK;
         } else {
             self->wifi_join_state = WIFI_JOIN_STATE_FAIL;
         }
@@ -503,15 +510,20 @@ void cyw43_cb_process_async_event(void *cb_data, const cyw43_async_event_t *ev) 
                 cyw43_cb_tcpip_set_link_down(self, ev->interface);
             }
         }
-    } else if (ev->event_type == CYW43_EV_PSK_SUP) {
+    } else if ((ev->event_type == CYW43_EV_PSK_SUP) ||
+               (ev->event_type == CYW43_EV_BCM43456_PSK_SUP_ALT)) {
         if (ev->status == 6) { // WLC_SUP_KEYED
+            if ((self->wifi_join_state & WIFI_JOIN_STATE_KIND_MASK) == WIFI_JOIN_STATE_BADAUTH) {
+                self->wifi_join_state = (self->wifi_join_state & ~WIFI_JOIN_STATE_KIND_MASK) | WIFI_JOIN_STATE_ACTIVE;
+            }
+            self->wifi_join_state |= WIFI_JOIN_STATE_AUTH | WIFI_JOIN_STATE_LINK;
             self->wifi_join_state |= WIFI_JOIN_STATE_KEYED;
         } else if ((ev->status == 4 || ev->status == 8 || ev->status == 10) && ev->reason == 15) {
             // Timeout waiting for key exchange M1/M3/G1
             // Probably at edge of the cell, retry
             self->pend_rejoin = true;
             cyw43_schedule_internal_poll_dispatch(cyw43_poll_func);
-        } else {
+        } else if (ev->event_type == CYW43_EV_PSK_SUP) {
             // PSK_SUP failure
             self->wifi_join_state = WIFI_JOIN_STATE_BADAUTH;
         }
@@ -642,9 +654,8 @@ int cyw43_wifi_get_pm(cyw43_t *self, uint32_t *pm_out) {
 }
 
 int cyw43_wifi_get_mac(cyw43_t *self, int itf, uint8_t mac[6]) {
-    (void)self;
     (void)itf;
-    cyw43_hal_get_mac(CYW43_HAL_MAC_WLAN0, &mac[0]);
+    memcpy(mac, self->mac, 6);
     return 0;
 }
 
