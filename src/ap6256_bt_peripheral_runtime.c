@@ -30,6 +30,7 @@
 #define AP6256_BT_PERIPHERAL_NAME                "Karios48 BLE Test"
 #define AP6256_BT_PERIPHERAL_SERVICE_UUID        "7C4E0001-2D5B-4A6B-8F3C-9B4A3E280001"
 #define AP6256_BT_PERIPHERAL_VALUE               "FW=karios48_board_test;BT=OK"
+#define AP6256_BT_PERIPHERAL_STACK_READY_TIMEOUT_MS 30000U
 #define AP6256_BT_PERIPHERAL_CONNECT_TIMEOUT_MS  60000U
 #define AP6256_BT_PERIPHERAL_READ_TIMEOUT_MS     15000U
 
@@ -494,7 +495,7 @@ static bool bt_peripheral_start_stack(char *detail, size_t detail_len)
     }
 
     test_uart_printf("[ INFO ] bt.ble_peripheral stage: wait HCI working\r\n");
-    if (!bt_peripheral_wait_until(&s_bt_peripheral_runtime.stack_ready, AP6256_BT_PERIPHERAL_READ_TIMEOUT_MS)) {
+    if (!bt_peripheral_wait_until(&s_bt_peripheral_runtime.stack_ready, AP6256_BT_PERIPHERAL_STACK_READY_TIMEOUT_MS)) {
         bt_peripheral_print_uart_diag("hci_timeout");
         test_uart_printf("[ INFO ] bt.ble_peripheral hci trace: cc=%lu last_cc=0x%04X/s%02X cs=%lu last_cs=0x%04X/s%02X pof=%u state=%u\r\n",
                          (unsigned long)s_bt_peripheral_runtime.command_complete_count,

@@ -5,8 +5,10 @@
 
 #include "ap6256_connectivity.h"
 #include "ap6256_driver.h"
+#include "cmsis_os2.h"
 #include "test_uart.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -54,6 +56,46 @@ static void format_bt_transport_summary(char *buffer, size_t buffer_len,
                    diag->version_status,
                    diag->hci_version,
                    diag->manufacturer);
+}
+
+static osPriority_t board_test_raise_thread_priority(osPriority_t target)
+{
+    osThreadId_t thread_id = osThreadGetId();
+    osPriority_t previous = osPriorityNone;
+
+    if (thread_id == NULL) {
+        return osPriorityNone;
+    }
+
+    previous = osThreadGetPriority(thread_id);
+    if (previous < target) {
+        (void)osThreadSetPriority(thread_id, target);
+    }
+    return previous;
+}
+
+static void board_test_restore_thread_priority(osPriority_t previous)
+{
+    osThreadId_t thread_id = osThreadGetId();
+
+    if ((thread_id == NULL) || (previous == osPriorityNone)) {
+        return;
+    }
+
+    (void)osThreadSetPriority(thread_id, previous);
+}
+
+static bool board_test_disable_uart_console(void)
+{
+    bool previous = test_uart_uart_console_enabled();
+
+    test_uart_set_uart_console_enabled(false);
+    return previous;
+}
+
+static void board_test_restore_uart_console(bool previous)
+{
+    test_uart_set_uart_console_enabled(previous);
 }
 
 void test_wifi_connect(board_test_result_t *result)
@@ -176,10 +218,12 @@ void test_bt_ble_link(board_test_result_t *result)
     ap6256_bt_runtime_summary_t summary;
     ap6256_status_t st;
     ap6256_bt_diag_t diag;
+    bool uart_console_previous;
 
     memset(&summary, 0, sizeof(summary));
     memset(&diag, 0, sizeof(diag));
     memset(detail, 0, sizeof(detail));
+    uart_console_previous = board_test_disable_uart_console();
 
     test_uart_printf("[ INFO ] bt.ble_link stage: transport preflight\r\n");
     st = ap6256_connectivity_probe_bt_transport(&diag);
@@ -205,11 +249,14 @@ void test_bt_ble_link(board_test_result_t *result)
                               measured,
                               "AP6256 Bluetooth transport preflight failed before BLE scan/connect.",
                               "Check BT_REG_ON path, UART3 routing, CTS/RTS behavior, and 3V3_WIFI rail.");
+        board_test_restore_uart_console(uart_console_previous);
         return;
     }
 
     test_uart_printf("[ INFO ] bt.ble_link stage: runtime interactive start\r\n");
+    osPriority_t previous_priority = board_test_raise_thread_priority(osPriorityAboveNormal);
     st = ap6256_bt_runtime_run_interactive(&summary, detail, sizeof(detail));
+    board_test_restore_thread_priority(previous_priority);
     (void)snprintf(measured,
                    sizeof(measured),
                    "st=%s,dev=%u,svc=%u,patch=%u,addr=%s",
@@ -228,6 +275,7 @@ void test_bt_ble_link(board_test_result_t *result)
                               measured,
                               detail,
                               "");
+        board_test_restore_uart_console(uart_console_previous);
         return;
     }
 
@@ -239,6 +287,7 @@ void test_bt_ble_link(board_test_result_t *result)
                           measured,
                           detail,
                           "Check AP6256 BT power, UART3 routing, PatchRAM asset, and BLE target behavior.");
+    board_test_restore_uart_console(uart_console_previous);
 }
 
 void test_bt_ble_peripheral(board_test_result_t *result)
@@ -248,10 +297,12 @@ void test_bt_ble_peripheral(board_test_result_t *result)
     ap6256_bt_peripheral_runtime_summary_t summary;
     ap6256_status_t st;
     ap6256_bt_diag_t diag;
+    bool uart_console_previous;
 
     memset(&summary, 0, sizeof(summary));
     memset(&diag, 0, sizeof(diag));
     memset(detail, 0, sizeof(detail));
+    uart_console_previous = board_test_disable_uart_console();
 
     ap6256_bt_runtime_suspend();
     ap6256_bt_peripheral_runtime_suspend();
@@ -279,11 +330,14 @@ void test_bt_ble_peripheral(board_test_result_t *result)
                               measured,
                               "AP6256 Bluetooth transport preflight failed before BLE advertising started.",
                               "Check BT_REG_ON path, UART3 routing, CTS/RTS behavior, and 3V3_WIFI rail.");
+        board_test_restore_uart_console(uart_console_previous);
         return;
     }
 
     test_uart_printf("[ INFO ] bt.ble_peripheral stage: runtime interactive start\r\n");
+    osPriority_t previous_priority = board_test_raise_thread_priority(osPriorityAboveNormal);
     st = ap6256_bt_peripheral_runtime_run_interactive(&summary, detail, sizeof(detail));
+    board_test_restore_thread_priority(previous_priority);
     (void)snprintf(measured,
                    sizeof(measured),
                    "st=%s,patch=%u,adv=%u,conn=%u,reads=%lu,addr=%s",
@@ -303,6 +357,7 @@ void test_bt_ble_peripheral(board_test_result_t *result)
                               measured,
                               detail,
                               "");
+        board_test_restore_uart_console(uart_console_previous);
         return;
     }
 
@@ -314,6 +369,7 @@ void test_bt_ble_peripheral(board_test_result_t *result)
                           measured,
                           detail,
                           "Check AP6256 BT power, UART3 routing, PatchRAM asset, and phone-side BLE connect/read workflow.");
+    board_test_restore_uart_console(uart_console_previous);
 }
 
 void test_bt_uart_hci(board_test_result_t *result)
@@ -323,8 +379,10 @@ void test_bt_uart_hci(board_test_result_t *result)
     ap6256_bt_diag_t diag;
     const ap6256_bt_state_t *state;
     uint8_t bt_hci_ok;
+    bool uart_console_previous;
 
     memset(&diag, 0, sizeof(diag));
+    uart_console_previous = board_test_disable_uart_console();
     /*
      * The BLE qualification path owns USART3 through BTstack. Power-cycle and
      * tear down any residual BTstack UART state before the raw diagnostic probe
@@ -365,6 +423,7 @@ void test_bt_uart_hci(board_test_result_t *result)
     if ((state != NULL) && (state->last_error[0] != '\0')) {
         test_uart_printf("[ INFO ] bt.hci note: %s\r\n", state->last_error);
     }
+    board_test_restore_uart_console(uart_console_previous);
 }
 
 void test_wifi_print_info(void)

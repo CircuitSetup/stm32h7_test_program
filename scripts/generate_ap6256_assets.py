@@ -26,9 +26,9 @@ COMMON_ASSETS = [
     {
         "macro": "BT_PATCHRAM",
         "symbol": "bt_patchram",
-        "relative_path": "assets/ap6256/BCM4345C0_003.001.025.0162.0000_Generic_UART_37_4MHz_wlbga_ref_iLNA_iTR_eLG.hcd",
-        "source_url": "repo:assets/ap6256/BCM4345C0_003.001.025.0162.0000_Generic_UART_37_4MHz_wlbga_ref_iLNA_iTR_eLG.hcd",
-        "version_hint": "003.001.025.0162",
+        "relative_path": "assets/ap6256/BCM4345C5.hcd",
+        "source_url": f"{MANJARO_AP6256_BASE_URL}/BCM4345C5.hcd",
+        "version_hint": "2020.02-manjaro-ap6256",
     },
     {
         "macro": "WIFI_NVRAM_REFERENCE",

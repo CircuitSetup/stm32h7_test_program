@@ -13,11 +13,12 @@
 #define AP6256_BT_ENABLE_PORT GPIOD
 #define AP6256_BT_ENABLE_PIN  GPIO_PIN_13
 
-#define AP6256_POWER_SETTLE_MS     120U
-#define AP6256_SDIO_READY_TIMEOUT  500U
-#define AP6256_SDIO_CMD_TIMEOUT    120U
-#define AP6256_BT_EVENT_TIMEOUT    350U
-#define AP6256_CMD52_RETRIES       8U
+#define AP6256_POWER_SETTLE_MS          120U
+#define AP6256_BT_POWER_DOWN_SETTLE_MS  120U
+#define AP6256_SDIO_READY_TIMEOUT       500U
+#define AP6256_SDIO_CMD_TIMEOUT         120U
+#define AP6256_BT_EVENT_TIMEOUT         350U
+#define AP6256_CMD52_RETRIES            8U
 #define AP6256_SDIO_FUNC_READY_TIMEOUT 200U
 #define AP6256_SDIO_DATA_TIMEOUT_MS    1000U
 #define AP6256_SDIO_CMD_GUARD_LOOPS    2000000UL
@@ -520,6 +521,14 @@ static void ap6256_bt_restore_flow_control(void)
     HAL_GPIO_Init(GPIOD, &gpio);
 }
 
+static void ap6256_bt_power_down_and_settle(void)
+{
+    ap6256_power_down();
+    ap6256_bt_restore_flow_control();
+    HAL_Delay(AP6256_BT_POWER_DOWN_SETTLE_MS);
+    test_uart_flush_uart_rx();
+}
+
 static ap6256_status_t ap6256_bt_hci_probe_once(uint8_t wl_on, ap6256_bt_diag_t *diag)
 {
     static const uint8_t cmd_reset[] = { 0x01U, 0x03U, 0x0CU, 0x00U };
@@ -534,8 +543,7 @@ static ap6256_status_t ap6256_bt_hci_probe_once(uint8_t wl_on, ap6256_bt_diag_t 
 
     memset(diag, 0, sizeof(*diag));
 
-    ap6256_power_down();
-    HAL_Delay(20U);
+    ap6256_bt_power_down_and_settle();
     ap6256_bt_prepare_flow_control();
     ap6256_set_enables((wl_on != 0U) ? 1U : 0U, 1U);
     diag->wl_reg_on = (wl_on != 0U) ? 1U : 0U;
@@ -585,8 +593,7 @@ static ap6256_status_t ap6256_bt_hci_probe_once(uint8_t wl_on, ap6256_bt_diag_t 
     }
 
 exit:
-    ap6256_power_down();
-    ap6256_bt_restore_flow_control();
+    ap6256_bt_power_down_and_settle();
     return st;
 }
 
@@ -1197,8 +1204,7 @@ ap6256_status_t ap6256_bt_uart_read(uint8_t *data, uint16_t len, uint32_t timeou
 
 ap6256_status_t ap6256_bt_open(uint8_t wl_on)
 {
-    ap6256_power_down();
-    HAL_Delay(20U);
+    ap6256_bt_power_down_and_settle();
     ap6256_bt_prepare_flow_control();
     ap6256_set_enables((wl_on != 0U) ? 1U : 0U, 1U);
     HAL_Delay(AP6256_POWER_SETTLE_MS);
@@ -1210,8 +1216,7 @@ ap6256_status_t ap6256_bt_open(uint8_t wl_on)
 
 void ap6256_bt_close(void)
 {
-    ap6256_power_down();
-    ap6256_bt_restore_flow_control();
+    ap6256_bt_power_down_and_settle();
 }
 
 ap6256_status_t ap6256_bt_hci_command(uint16_t opcode,
