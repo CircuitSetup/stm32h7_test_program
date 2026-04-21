@@ -1,5 +1,6 @@
 #include "board_test.h"
 #include "ap6256_bt_runtime.h"
+#include "ap6256_bt_peripheral_runtime.h"
 #include "ap6256_wifi_runtime.h"
 
 #include "ap6256_connectivity.h"
@@ -240,6 +241,81 @@ void test_bt_ble_link(board_test_result_t *result)
                           "Check AP6256 BT power, UART3 routing, PatchRAM asset, and BLE target behavior.");
 }
 
+void test_bt_ble_peripheral(board_test_result_t *result)
+{
+    char measured[160];
+    char detail[160];
+    ap6256_bt_peripheral_runtime_summary_t summary;
+    ap6256_status_t st;
+    ap6256_bt_diag_t diag;
+
+    memset(&summary, 0, sizeof(summary));
+    memset(&diag, 0, sizeof(diag));
+    memset(detail, 0, sizeof(detail));
+
+    ap6256_bt_runtime_suspend();
+    ap6256_bt_peripheral_runtime_suspend();
+    test_uart_printf("[ INFO ] bt.ble_peripheral stage: transport preflight\r\n");
+    st = ap6256_connectivity_probe_bt_transport(&diag);
+    format_bt_transport_summary(measured, sizeof(measured), st, &diag);
+    test_uart_printf("[ INFO ] bt.ble_peripheral stage: transport preflight result st=%s reset=%u/s%02X ver=%u/s%02X frames=%lu\r\n",
+                     ap6256_status_to_string(st),
+                     (unsigned)diag.reset_event_seen,
+                     (unsigned)diag.reset_status,
+                     (unsigned)diag.version_event_seen,
+                     (unsigned)diag.version_status,
+                     (unsigned long)diag.event_frames_seen);
+
+    if ((st != AP6256_STATUS_OK) ||
+        (diag.reset_event_seen == 0U) ||
+        (diag.version_event_seen == 0U) ||
+        (diag.reset_status != 0x00U) ||
+        (diag.version_status != 0x00U)) {
+        board_test_set_result(result,
+                              "bt.ble_peripheral",
+                              "AP6256 Bluetooth",
+                              TEST_STATUS_FAIL,
+                              TEST_MODE_INTERACTIVE,
+                              measured,
+                              "AP6256 Bluetooth transport preflight failed before BLE advertising started.",
+                              "Check BT_REG_ON path, UART3 routing, CTS/RTS behavior, and 3V3_WIFI rail.");
+        return;
+    }
+
+    test_uart_printf("[ INFO ] bt.ble_peripheral stage: runtime interactive start\r\n");
+    st = ap6256_bt_peripheral_runtime_run_interactive(&summary, detail, sizeof(detail));
+    (void)snprintf(measured,
+                   sizeof(measured),
+                   "st=%s,patch=%u,adv=%u,conn=%u,reads=%lu,addr=%s",
+                   ap6256_status_to_string(st),
+                   summary.patchram_loaded,
+                   summary.advertising_started,
+                   summary.connected,
+                   (unsigned long)summary.read_count,
+                   (summary.peer_address[0] != '\0') ? summary.peer_address : "n/a");
+
+    if (st == AP6256_STATUS_OK) {
+        board_test_set_result(result,
+                              "bt.ble_peripheral",
+                              "AP6256 Bluetooth",
+                              TEST_STATUS_PASS,
+                              TEST_MODE_INTERACTIVE,
+                              measured,
+                              detail,
+                              "");
+        return;
+    }
+
+    board_test_set_result(result,
+                          "bt.ble_peripheral",
+                          "AP6256 Bluetooth",
+                          TEST_STATUS_FAIL,
+                          TEST_MODE_INTERACTIVE,
+                          measured,
+                          detail,
+                          "Check AP6256 BT power, UART3 routing, PatchRAM asset, and phone-side BLE connect/read workflow.");
+}
+
 void test_bt_uart_hci(board_test_result_t *result)
 {
     char measured[128];
@@ -255,6 +331,7 @@ void test_bt_uart_hci(board_test_result_t *result)
      * so bt.hci reports the controller, not a half-closed runtime.
      */
     ap6256_bt_runtime_suspend();
+    ap6256_bt_peripheral_runtime_suspend();
     st = ap6256_connectivity_probe_bt_transport(&diag);
     state = ap6256_connectivity_get_bt_state();
     bt_hci_ok = ((st == AP6256_STATUS_OK) &&

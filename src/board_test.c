@@ -93,6 +93,7 @@ static const board_test_case_t s_test_cases[] = {
     { "wifi.connect", "wifi", "AP6256", TEST_MODE_INTERACTIVE, test_wifi_connect },
     { "wifi.sdio", "wifi", "AP6256", TEST_MODE_SANITY, test_wifi_sdio_presence },
     { "bt.ble_link", "bt", "AP6256", TEST_MODE_INTERACTIVE, test_bt_ble_link },
+    { "bt.ble_peripheral", "bt", "AP6256", TEST_MODE_INTERACTIVE, test_bt_ble_peripheral },
     { "bt.hci", "bt", "AP6256", TEST_MODE_SANITY, test_bt_uart_hci },
 
     { "ade.scan", "ade", "ADE7816 x8", TEST_MODE_AUTOMATIC, test_ade_scan_all },

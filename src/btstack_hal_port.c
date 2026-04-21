@@ -27,6 +27,7 @@ static volatile uint32_t s_rx_irq_bytes;
 static volatile uint32_t s_rx_blocks_complete;
 static volatile uint32_t s_rx_errors;
 static volatile uint32_t s_rx_overruns;
+static uint8_t s_hw_flowcontrol_enabled;
 
 static uint16_t hal_uart_dma_ring_count(void)
 {
@@ -143,6 +144,7 @@ void hal_uart_dma_init(void)
     s_rx_blocks_complete = 0U;
     s_rx_errors = 0U;
     s_rx_overruns = 0U;
+    s_hw_flowcontrol_enabled = 1U;
 }
 
 void hal_uart_dma_deinit(void)
@@ -173,17 +175,13 @@ int hal_uart_dma_set_baud(uint32_t baud)
         return 0;
     }
 
-    if (huart3.Init.BaudRate == baud) {
-        return 0;
-    }
-
     if (HAL_UART_DeInit(&huart3) != HAL_OK) {
         return -1;
     }
 
     s_irq_active = 0U;
     huart3.Init.BaudRate = baud;
-    huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+    huart3.Init.HwFlowCtl = (s_hw_flowcontrol_enabled != 0U) ? UART_HWCONTROL_RTS_CTS : UART_HWCONTROL_NONE;
     if (HAL_UART_Init(&huart3) != HAL_OK) {
         return -1;
     }
@@ -195,6 +193,18 @@ int hal_uart_dma_set_baud(uint32_t baud)
 #endif
 
     return 0;
+}
+
+int hal_uart_dma_set_flowcontrol(int flowcontrol)
+{
+    uint8_t enabled = (flowcontrol != 0) ? 1U : 0U;
+
+    if (s_hw_flowcontrol_enabled == enabled) {
+        return 0;
+    }
+
+    s_hw_flowcontrol_enabled = enabled;
+    return hal_uart_dma_set_baud(huart3.Init.BaudRate);
 }
 
 void hal_uart_dma_send_block(const uint8_t *buffer, uint16_t length)

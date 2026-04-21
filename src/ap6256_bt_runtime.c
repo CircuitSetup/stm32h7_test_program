@@ -2,6 +2,7 @@
 
 #include "ap6256_assets.h"
 #include "ap6256_connectivity.h"
+#include "btstack_chipset_bcm.h"
 #include "btstack_run_loop_embedded.h"
 #include "btstack_defines.h"
 #include "btstack_event.h"
@@ -72,7 +73,7 @@ static const hci_transport_config_uart_t s_bt_uart_config = {
     HCI_TRANSPORT_CONFIG_UART,
     115200U,
     115200U,
-    0,
+    BTSTACK_UART_FLOWCONTROL_ON,
     NULL,
     BTSTACK_UART_PARITY_OFF
 };
@@ -509,7 +510,7 @@ static int bt_control_on(void)
     }
 
     s_bt_runtime.patchram_loaded = 0U;
-    test_uart_printf("[ INFO ] bt.ble_link stage: ROM HCI runtime (PatchRAM bypassed)\r\n");
+    test_uart_printf("[ INFO ] bt.ble_link stage: controller power on, BCM PatchRAM init pending\r\n");
     test_uart_flush_uart_rx();
     return 0;
 }
@@ -560,6 +561,7 @@ static void bt_runtime_reset_session_state(void)
     s_bt_runtime.device_count = 0U;
     s_bt_runtime.service_count = 0U;
     bt_set_connection_state("idle");
+    ap6256_connectivity_set_bt_read_count(0U);
 }
 
 static bool bt_runtime_wait_until(volatile uint8_t *flag, uint32_t timeout_ms)
@@ -577,6 +579,36 @@ static bool bt_runtime_wait_until(volatile uint8_t *flag, uint32_t timeout_ms)
     }
 
     return false;
+}
+
+static bool bt_runtime_wait_for_hci_state(HCI_STATE target_state, uint32_t timeout_ms)
+{
+    uint32_t start_ms = HAL_GetTick();
+
+    while ((HAL_GetTick() - start_ms) < timeout_ms) {
+        (void)hal_uart_dma_poll();
+        btstack_run_loop_embedded_execute_once();
+        (void)hal_uart_dma_poll();
+        bt_update_runtime_state();
+        if (hci_get_state() == target_state) {
+            return true;
+        }
+    }
+
+    return hci_get_state() == target_state;
+}
+
+static bool bt_runtime_power_off_stack(uint32_t timeout_ms)
+{
+    if (hci_get_state() == HCI_STATE_OFF) {
+        return true;
+    }
+
+    if (hci_power_control(HCI_POWER_OFF) != 0) {
+        return false;
+    }
+
+    return bt_runtime_wait_for_hci_state(HCI_STATE_OFF, timeout_ms);
 }
 
 static bool bt_runtime_start_stack(char *detail, size_t detail_len)
@@ -608,6 +640,7 @@ static bool bt_runtime_start_stack(char *detail, size_t detail_len)
     hci_init(hci_transport_h4_instance(btstack_uart_block_embedded_instance()), (void *)&s_bt_uart_config);
     test_uart_printf("[ INFO ] bt.ble_link stage: hci_init exit\r\n");
     test_uart_printf("[ INFO ] bt.ble_link stage: hci config enter\r\n");
+    hci_set_chipset(btstack_chipset_bcm_instance());
     hci_set_control(&s_bt_control);
     l2cap_init();
     gatt_client_init();
@@ -655,7 +688,7 @@ static bool bt_runtime_start_stack(char *detail, size_t detail_len)
         }
         ap6256_connectivity_set_bt_note(detail);
         hci_remove_event_handler(&s_bt_runtime.hci_event_registration);
-        hci_close();
+        (void)bt_runtime_power_off_stack(2000U);
         hci_deinit();
         s_bt_runtime.active = 0U;
         bt_update_runtime_state();
@@ -666,19 +699,22 @@ static bool bt_runtime_start_stack(char *detail, size_t detail_len)
     return true;
 }
 
-static void bt_runtime_stop_stack(void)
+static bool bt_runtime_stop_stack(void)
 {
+    bool powered_off = true;
+
     if (s_bt_runtime.active == 0U) {
         bt_set_connection_state("idle");
         bt_update_runtime_state();
-        return;
+        return true;
     }
 
     if (s_bt_runtime.stack_ready != 0U) {
         hci_remove_event_handler(&s_bt_runtime.hci_event_registration);
-        hci_close();
-        hci_deinit();
     }
+
+    powered_off = bt_runtime_power_off_stack(2000U);
+    hci_deinit();
 
     s_bt_runtime.active = 0U;
     s_bt_runtime.stack_ready = 0U;
@@ -687,6 +723,7 @@ static void bt_runtime_stop_stack(void)
     s_bt_runtime.connection_handle = HCI_CON_HANDLE_INVALID;
     bt_set_connection_state("idle");
     bt_update_runtime_state();
+    return powered_off;
 }
 
 static ap6256_status_t bt_runtime_scan(char *detail, size_t detail_len)
@@ -882,6 +919,7 @@ static ap6256_status_t bt_runtime_execute(uint8_t reuse_cached,
     int selection;
     int cached_index;
     ap6256_status_t st = AP6256_STATUS_OK;
+    bool cleanup_ok = true;
 
     if ((detail == NULL) || (detail_len == 0U)) {
         return AP6256_STATUS_BAD_PARAM;
@@ -984,13 +1022,20 @@ static ap6256_status_t bt_runtime_execute(uint8_t reuse_cached,
 
 exit:
     bt_runtime_disconnect(2000U);
-    bt_runtime_stop_stack();
+    if (!bt_runtime_stop_stack()) {
+        cleanup_ok = false;
+    }
     s_bt_runtime.command_polling = 0U;
     if (st != AP6256_STATUS_OK) {
         ap6256_connectivity_set_bt_note(detail);
     }
     network_manager_release(NETWORK_OWNER_BLUETOOTH);
     bt_update_runtime_state();
+    if (!cleanup_ok && (detail != NULL) && (detail_len > 0U)) {
+        bt_set_detail(detail, detail_len, "BLE central runtime cleanup did not reach HCI power-off cleanly.");
+        ap6256_connectivity_set_bt_note(detail);
+        return AP6256_STATUS_IO_ERROR;
+    }
     return st;
 }
 
@@ -1011,8 +1056,8 @@ void ap6256_bt_runtime_poll(void)
 
 void ap6256_bt_runtime_suspend(void)
 {
-    bt_runtime_disconnect(2000U);
-    bt_runtime_stop_stack();
+    (void)bt_runtime_disconnect(2000U);
+    (void)bt_runtime_stop_stack();
     ap6256_connectivity_set_bt_note("BTstack runtime suspended.");
 }
 

@@ -544,6 +544,8 @@ static void app_init_task(void *argument)
     test_uart_flush_rx();
 #if BOARD_AUTORUN_ON_BOOT
     board_test_run_all();
+#elif 1
+    board_test_run_named("bt.ble_peripheral");
 #else
     test_uart_write_str("Auto-run at boot is disabled. Type 'run_all' to execute tests.\r\n");
 #endif

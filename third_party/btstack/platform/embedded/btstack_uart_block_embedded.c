@@ -121,6 +121,9 @@ static void btstack_uart_embedded_process(btstack_data_source_t *ds, btstack_dat
 
 static int btstack_uart_embedded_open(void){
     hal_uart_dma_init();
+#ifdef HAVE_UART_DMA_SET_FLOWCONTROL
+    hal_uart_dma_set_flowcontrol(btstack_uart_block_configuration->flowcontrol);
+#endif
     hal_uart_dma_set_baud(btstack_uart_block_configuration->baudrate);
 
     // set up polling data_source

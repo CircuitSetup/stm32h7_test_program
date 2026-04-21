@@ -22,3 +22,9 @@ bool gap_reconnect_security_setup_active(hci_con_handle_t con_handle)
     UNUSED(con_handle);
     return false;
 }
+
+int sm_le_device_index(hci_con_handle_t con_handle)
+{
+    UNUSED(con_handle);
+    return -1;
+}

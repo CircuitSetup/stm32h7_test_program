@@ -647,6 +647,12 @@ void ap6256_connectivity_set_bt_selection(const char *address,
     s_bt_state.last_update_ms = HAL_GetTick();
 }
 
+void ap6256_connectivity_set_bt_read_count(uint32_t read_count)
+{
+    s_bt_state.gatt_read_count = read_count;
+    s_bt_state.last_update_ms = HAL_GetTick();
+}
+
 const char *ap6256_connectivity_wifi_security_name(ap6256_wifi_security_t security)
 {
     switch (security) {
@@ -1122,11 +1128,12 @@ void ap6256_connectivity_print_bt_info(void)
                      (unsigned)state->uart_ring_count,
                      (unsigned)state->uart_irq_active,
                      (unsigned)state->uart_rx_active);
-    test_uart_printf("  Selected device=%s name='%s' rssi=%d service=%s\r\n",
+    test_uart_printf("  Selected device=%s name='%s' rssi=%d service=%s reads=%lu\r\n",
                      (state->selected_device[0] != '\0') ? state->selected_device : "n/a",
                      (state->selected_name[0] != '\0') ? state->selected_name : "n/a",
                      (int)state->selected_device_rssi,
-                     (state->selected_service_uuid[0] != '\0') ? state->selected_service_uuid : "n/a");
+                     (state->selected_service_uuid[0] != '\0') ? state->selected_service_uuid : "n/a",
+                     (unsigned long)state->gatt_read_count);
     test_uart_printf("  Cached session selection: %u\r\n",
                      ap6256_bt_runtime_has_cached_selection());
     test_uart_printf("  Embedded assets ready: %u\r\n", state->assets_ready);

@@ -58,6 +58,7 @@ Typical workflow:
 - `help`
 - `run_all`
 - `run <group|test_name>`
+- `run bt.ble_peripheral`
 - `run ade <index>`
 - `run analog_fixture`
 - `summary`
@@ -98,8 +99,28 @@ Interactive tests:
 
 - Reset path confirmation with `S1`
 - Ethernet DHCP + ping qualification through the DP83640 at MDIO address 1
+- AP6256 BLE peripheral advertising + inbound phone connection + GATT read via `run bt.ble_peripheral`
 - microSD detect / identify
 - USB-C full-speed bus activity with host cable attached
+
+### BLE Peripheral Qualification
+
+Use `run bt.ble_peripheral` to validate the AP6256 as a connectable BLE peripheral. The firmware advertises a custom test service, waits for a phone to connect, and passes only after the phone reads the dynamic characteristic once.
+
+Phone-side workflow:
+
+1. Open `nRF Connect` (or another BLE scanner that can issue a read).
+2. Start `run bt.ble_peripheral` from the RTT console.
+3. Scan for `Karios48 BLE Test` and connect to it.
+4. Open the custom service `7C4E0001-2D5B-4A6B-8F3C-9B4A3E280001`.
+5. Read characteristic `7C4E0002-2D5B-4A6B-8F3C-9B4A3E280001`.
+
+Expected RTT/result behavior:
+
+- The firmware logs `bt.ble_peripheral` stages for transport preflight, advertising start, peer connection, characteristic read, and disconnect.
+- A pass result includes `st=OK`, `patch=1`, `adv=1`, `reads>=1`, and the peer address.
+- If no phone connects, the test times out with an "advertising started but no inbound BLE connection" detail.
+- If the phone connects but does not read the characteristic, the test times out with a "peer connected but no GATT read was observed" detail.
 
 Fixture tests:
 

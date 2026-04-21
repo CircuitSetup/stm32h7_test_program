@@ -148,6 +148,7 @@ typedef struct {
     char selected_name[32];
     char selected_service_uuid[40];
     char connection_state[24];
+    uint32_t gatt_read_count;
     uint32_t uart_tx_blocks;
     uint32_t uart_tx_bytes;
     uint32_t uart_rx_irq_bytes;
@@ -312,6 +313,7 @@ void ap6256_connectivity_set_bt_selection(const char *address,
                                           const char *name,
                                           int8_t rssi,
                                           const char *service_uuid);
+void ap6256_connectivity_set_bt_read_count(uint32_t read_count);
 
 void ap6256_connectivity_print_wifi_info(void);
 void ap6256_connectivity_print_bt_info(void);

@@ -59,6 +59,7 @@ void test_ethernet_link(board_test_result_t *result);
 void test_wifi_connect(board_test_result_t *result);
 void test_wifi_sdio_presence(board_test_result_t *result);
 void test_bt_ble_link(board_test_result_t *result);
+void test_bt_ble_peripheral(board_test_result_t *result);
 void test_bt_uart_hci(board_test_result_t *result);
 void test_ade_scan_all(board_test_result_t *result);
 void test_ade_single_device(uint8_t index, board_test_result_t *result);
