@@ -106,6 +106,10 @@ static volatile uint32_t s_cyw43_last_async_event_type;
 static volatile uint32_t s_cyw43_last_async_event_status;
 static volatile uint32_t s_cyw43_last_async_event_reason;
 static volatile uint32_t s_cyw43_last_async_event_flags;
+static volatile uint32_t s_cyw43_last_join_event_type;
+static volatile uint32_t s_cyw43_last_join_event_status;
+static volatile uint32_t s_cyw43_last_join_event_reason;
+static volatile uint32_t s_cyw43_last_join_event_flags;
 static volatile uint32_t s_cyw43_async_event_count;
 static volatile uint32_t s_cyw43_join_event_count;
 static volatile uint32_t s_cyw43_last_ioctl_kind;
@@ -159,6 +163,7 @@ static volatile uint8_t s_cyw43_assoc_target_auth_code;
 static volatile uint8_t s_cyw43_assoc_candidate_index;
 static volatile uint8_t s_cyw43_assoc_candidate_count;
 static volatile uint16_t s_cyw43_assoc_target_chanspec;
+static volatile uint16_t s_cyw43_assoc_target_rsn_cap;
 static volatile uint8_t s_cyw43_last_rx_class;
 static volatile uint8_t s_cyw43_last_rx_channel;
 static volatile uint16_t s_cyw43_last_rx_sdpcm_len;
@@ -819,6 +824,10 @@ void ap6256_cyw43_port_deinit(void)
     s_cyw43_last_async_event_status = 0U;
     s_cyw43_last_async_event_reason = 0U;
     s_cyw43_last_async_event_flags = 0U;
+    s_cyw43_last_join_event_type = 0U;
+    s_cyw43_last_join_event_status = 0U;
+    s_cyw43_last_join_event_reason = 0U;
+    s_cyw43_last_join_event_flags = 0U;
     s_cyw43_async_event_count = 0U;
     s_cyw43_join_event_count = 0U;
     s_cyw43_last_ioctl_kind = 0U;
@@ -1557,11 +1566,23 @@ void ap6256_cyw43_port_record_join_event(uint32_t event_type,
                                          uint32_t flags)
 {
     s_cyw43_join_event_count++;
+    s_cyw43_last_join_event_type = event_type;
+    s_cyw43_last_join_event_status = status;
+    s_cyw43_last_join_event_reason = reason;
+    s_cyw43_last_join_event_flags = flags;
     s_cyw43_last_async_event_type = event_type;
     s_cyw43_last_async_event_status = status;
     s_cyw43_last_async_event_reason = reason;
     s_cyw43_last_async_event_flags = flags;
     ap6256_cyw43_port_persist_pre_reset_diag(1U);
+}
+
+void ap6256_cyw43_port_reset_join_event_window(void)
+{
+    s_cyw43_last_join_event_type = 0U;
+    s_cyw43_last_join_event_status = 0U;
+    s_cyw43_last_join_event_reason = 0U;
+    s_cyw43_last_join_event_flags = 0U;
 }
 
 uint32_t ap6256_cyw43_port_last_async_event_type(void)
@@ -1582,6 +1603,26 @@ uint32_t ap6256_cyw43_port_last_async_event_reason(void)
 uint32_t ap6256_cyw43_port_last_async_event_flags(void)
 {
     return s_cyw43_last_async_event_flags;
+}
+
+uint32_t ap6256_cyw43_port_last_join_event_type(void)
+{
+    return s_cyw43_last_join_event_type;
+}
+
+uint32_t ap6256_cyw43_port_last_join_event_status(void)
+{
+    return s_cyw43_last_join_event_status;
+}
+
+uint32_t ap6256_cyw43_port_last_join_event_reason(void)
+{
+    return s_cyw43_last_join_event_reason;
+}
+
+uint32_t ap6256_cyw43_port_last_join_event_flags(void)
+{
+    return s_cyw43_last_join_event_flags;
 }
 
 uint32_t ap6256_cyw43_port_async_event_count(void)
@@ -1944,6 +1985,7 @@ void ap6256_cyw43_port_record_assoc_target(const uint8_t bssid[6],
                                            uint16_t channel,
                                            uint8_t selected_5g,
                                            uint16_t chanspec,
+                                           uint16_t rsn_cap,
                                            uint32_t auth_type,
                                            uint8_t candidate_index,
                                            uint8_t candidate_count)
@@ -1960,6 +2002,7 @@ void ap6256_cyw43_port_record_assoc_target(const uint8_t bssid[6],
     s_cyw43_assoc_target_channel = (uint8_t)((channel <= 255U) ? channel : 0U);
     s_cyw43_assoc_target_5g = (selected_5g != 0U) ? 1U : 0U;
     s_cyw43_assoc_target_chanspec = chanspec;
+    s_cyw43_assoc_target_rsn_cap = rsn_cap;
     s_cyw43_assoc_candidate_index = candidate_index;
     s_cyw43_assoc_candidate_count = candidate_count;
     /*
@@ -1968,6 +2011,16 @@ void ap6256_cyw43_port_record_assoc_target(const uint8_t bssid[6],
      */
     s_cyw43_assoc_target_auth_code = (uint8_t)(auth_type & 0xFFU);
     ap6256_cyw43_port_persist_pre_reset_diag(1U);
+}
+
+uint8_t ap6256_cyw43_port_assoc_target_is_5g(void)
+{
+    return s_cyw43_assoc_target_5g;
+}
+
+uint16_t ap6256_cyw43_port_assoc_target_rsn_cap(void)
+{
+    return s_cyw43_assoc_target_rsn_cap;
 }
 
 void ap6256_cyw43_port_record_rx_frame(uint8_t rx_class,

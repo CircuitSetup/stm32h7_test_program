@@ -414,13 +414,14 @@ void cyw43_cb_process_async_event(void *cb_data, const cyw43_async_event_t *ev) 
     } else if (ev->event_type == CYW43_EV_SET_SSID) {
         if (ev->status == 0) {
             /*
-             * brcmfmac treats SET_SSID success as association success and
-             * pairs it with PSK_SUP completion for WPA/WPA2. Some BCM43456
-             * AP6256 5 GHz joins report SET_SSID/PSK progress without the
-             * 43439-style JOIN/ASSOC/LINK ordering, so preserve that evidence
-             * in the generic CYW43 join-state bits.
+             * WLC_SET_SSID success only proves the firmware accepted the
+             * connect command. It is not link completion on BCM43456, and
+             * promoting it to AUTH/LINK lets higher layers start DHCP before
+             * the four-way handshake has actually finished.
              */
-            self->wifi_join_state |= WIFI_JOIN_STATE_AUTH | WIFI_JOIN_STATE_LINK;
+            self->wifi_join_state =
+                (self->wifi_join_state & ~WIFI_JOIN_STATE_KIND_MASK) |
+                WIFI_JOIN_STATE_ACTIVE;
         } else if (ev->status == 3 && ev->reason == 0) {
             self->wifi_join_state = WIFI_JOIN_STATE_NONET;
             // No matching SSID found (could be out of range, or down)
@@ -466,17 +467,14 @@ void cyw43_cb_process_async_event(void *cb_data, const cyw43_async_event_t *ev) 
     } else if (ev->event_type == CYW43_EV_BCM43456_ASSOC_PROGRESS) {
         if (ev->status == 0) {
             /*
-             * Event 124 is not PSK_SUP in brcmfmac's public firmware-event
-             * enum. Older AP6256 experiments treated it as key completion,
-             * which can start DHCP while the WPA four-way handshake is still
-             * only at M1/EAPOL. Keep it as link-level progress only; DHCP must
-             * wait for PSK_SUP completion or another real keyed signal.
+             * Event 124 is progress only. Treating it as AUTH/LINK completion
+             * makes the MCU path paper over a half-finished association on
+             * 5 GHz. Keep the session active, but let AUTH/ASSOC/LINK/PSK
+             * events prove actual usable link state.
              */
             self->wifi_join_state =
                 (self->wifi_join_state & ~WIFI_JOIN_STATE_KIND_MASK) |
-                WIFI_JOIN_STATE_ACTIVE |
-                WIFI_JOIN_STATE_AUTH |
-                WIFI_JOIN_STATE_LINK;
+                WIFI_JOIN_STATE_ACTIVE;
         } else {
             self->wifi_join_state = WIFI_JOIN_STATE_FAIL;
         }

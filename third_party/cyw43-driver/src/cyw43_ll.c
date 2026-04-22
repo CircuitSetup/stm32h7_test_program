@@ -529,6 +529,7 @@ static size_t __attribute__((unused)) ap6256_build_brcmf_ext_join_params(uint8_t
 #define DOT11_IE_ID_RSN               (48)
 #define DOT11_IE_ID_VENDOR_SPECIFIC   (221)
 #define WPA_OUI_TYPE1                 "\x00\x50\xF2\x01"
+#define RSN_CAP_PTK_REPLAY_CNTR_MASK  ((1u << 2) | (1u << 3))
 #define RSN_CAP_MFPR_MASK             (1u << 6)
 #define RSN_CAP_MFPC_MASK             (1u << 7)
 
@@ -577,15 +578,15 @@ static size_t __attribute__((unused)) ap6256_build_brcmf_ext_join_params(uint8_t
 #endif
 
 #ifndef AP6256_CYW43_5G_JOIN_QTXPOWER_QDBM
-#define AP6256_CYW43_5G_JOIN_QTXPOWER_QDBM           (4U)
+#define AP6256_CYW43_5G_JOIN_QTXPOWER_QDBM           (0U)
 #endif
 
 #ifndef AP6256_CYW43_5G_JOIN_SAFE_VHT_OFF
-#define AP6256_CYW43_5G_JOIN_SAFE_VHT_OFF            (1U)
+#define AP6256_CYW43_5G_JOIN_SAFE_VHT_OFF            (0U)
 #endif
 
 #ifndef AP6256_CYW43_5G_JOIN_SET_CHANNEL_STARTER
-#define AP6256_CYW43_5G_JOIN_SET_CHANNEL_STARTER     (0U)
+#define AP6256_CYW43_5G_JOIN_SET_CHANNEL_STARTER     (1U)
 #endif
 
 #ifndef AP6256_CYW43_ABORT_SCAN_BEFORE_JOIN
@@ -596,8 +597,20 @@ static size_t __attribute__((unused)) ap6256_build_brcmf_ext_join_params(uint8_t
 #define AP6256_CYW43_PROGRAM_ASSOC_WPAIE             (1U)
 #endif
 
+#ifndef AP6256_CYW43_5G_SKIP_ASSOC_WPAIE
+#define AP6256_CYW43_5G_SKIP_ASSOC_WPAIE             (1U)
+#endif
+
+#ifndef AP6256_CYW43_5G_SKIP_BROAD_WPA2_AUTH
+#define AP6256_CYW43_5G_SKIP_BROAD_WPA2_AUTH         (1U)
+#endif
+
 #ifndef AP6256_CYW43_5G_WPA2_MFP_CAPABLE
-#define AP6256_CYW43_5G_WPA2_MFP_CAPABLE             (1U)
+#define AP6256_CYW43_5G_WPA2_MFP_CAPABLE             (0U)
+#endif
+
+#ifndef AP6256_CYW43_5G_SKIP_SUP_WPA_TUNING
+#define AP6256_CYW43_5G_SKIP_SUP_WPA_TUNING          (1U)
 #endif
 
 #ifndef AP6256_CYW43_ENABLE_BSSID_HINT
@@ -648,6 +661,10 @@ static uint8_t s_ap6256_scan_active;
 static bool ap6256_join_no_response_ok(int ret) {
     return (ret != 0) &&
            (ap6256_cyw43_port_last_ioctl_phase() == AP6256_CYW43_IOCTL_PHASE_WAIT_NO_PACKET);
+}
+
+static bool ap6256_assoc_wpaie_clear_error_ok(int ret) {
+    return ap6256_join_no_response_ok(ret) || (ret == -CYW43_ETIMEDOUT);
 }
 
 typedef struct _ap6256_sha1_ctx_t {
@@ -896,7 +913,9 @@ static size_t ap6256_fill_wsec_pmk(uint8_t *buf,
     return 4U + CYW43_WSEC_PMK_KEY_LEN;
 }
 
-static int ap6256_program_wpa2_psk_assoc_ie(cyw43_int_t *self, uint32_t wpa_auth, uint32_t mfp) {
+static int ap6256_program_wpa2_psk_assoc_ie(cyw43_int_t *self,
+                                            uint32_t wpa_auth,
+                                            uint32_t mfp) {
     /*
      * brcmfmac programs the RSN/WPA IE before association so firmware knows the
      * exact AKM/cipher set requested by cfg80211. This matters on WPA2/WPA3
@@ -922,6 +941,24 @@ static int ap6256_program_wpa2_psk_assoc_ie(cyw43_int_t *self, uint32_t wpa_auth
         return 0;
     }
 
+    if ((AP6256_CYW43_5G_SKIP_ASSOC_WPAIE != 0U) &&
+        (ap6256_cyw43_port_assoc_target_is_5g() != 0U) &&
+        (mfp == MFP_NONE)) {
+        /*
+         * The stable AP6256 5 GHz path now uses conservative SSID-only joins.
+         * Let firmware construct the final association RSN IE for that path
+         * instead of forcing our host-crafted WPA2 IE. Clear any stale host
+         * association IE first so a previous candidate or prior-band join
+         * cannot poison the firmware association context with leftover RSN
+         * data.
+         */
+        ret = cyw43_write_iovar_n(self, "wpaie", 0U, NULL, WWD_STA_INTERFACE);
+        if ((ret != 0) && ap6256_assoc_wpaie_clear_error_ok(ret)) {
+            ret = 0;
+        }
+        return ret;
+    }
+
     if (((wpa_auth & CYW43_WPA2_AUTH_PSK) == 0U) ||
         ((wpa_auth & CYW43_WPA3_AUTH_SAE_PSK) != 0U)) {
         return 0;
@@ -945,6 +982,15 @@ static int ap6256_program_wpa2_psk_assoc_ie(cyw43_int_t *self, uint32_t wpa_auth
         ret = 0;
     }
     return ret;
+}
+
+static uint8_t ap6256_join_should_program_sup_wpa_tuning(void)
+{
+    if ((AP6256_CYW43_5G_SKIP_SUP_WPA_TUNING != 0U) &&
+        (ap6256_cyw43_port_assoc_target_is_5g() != 0U)) {
+        return 0U;
+    }
+    return 1U;
 }
 
 static bool ap6256_ioctl_is_association_trigger(uint32_t kind, uint32_t cmd) {
@@ -5503,11 +5549,19 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
         (auth_type == CYW43_AUTH_WPA2_AES_PSK) &&
         (bssid == NULL) &&
         (channel == CYW43_CHANNEL_NONE);
+    const bool channel_hint_ssid_only_wpa2 =
+        (auth_type == CYW43_AUTH_WPA2_AES_PSK) &&
+        (bssid == NULL) &&
+        (channel != CYW43_CHANNEL_NONE);
     const bool bssid_hint_ssid_only_wpa2 =
         (AP6256_CYW43_ENABLE_BSSID_HINT != 0U) &&
         (auth_type == CYW43_AUTH_WPA2_AES_PSK) &&
         (bssid != NULL) &&
         (channel == CYW43_CHANNEL_NONE);
+    const bool scalar_ssid_only_wpa2 =
+        transition_ssid_only_wpa2 ||
+        channel_hint_ssid_only_wpa2 ||
+        bssid_hint_ssid_only_wpa2;
 
     if (wpa_auth == CYW43_WPA3_AUTH_SAE_PSK) {
         mfp = MFP_REQUIRED;
@@ -5516,15 +5570,7 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
     } else if ((AP6256_CYW43_5G_WPA2_MFP_CAPABLE != 0U) &&
                (auth_type == CYW43_AUTH_WPA2_AES_PSK) &&
                ((ap6256_join_channel_is_5g(channel) != 0U) ||
-                transition_ssid_only_wpa2 ||
-                bssid_hint_ssid_only_wpa2)) {
-        /*
-         * WPA2/WPA3 transition BSSIDs commonly advertise MFPC even when the host
-         * chooses the WPA2-PSK leg. brcmfmac parses that RSN capability and
-         * programs MFP policy before association. We do not choose SAE here, but
-         * do advertise MFPC so the association request is not a bare WPA2 IE
-         * against a transition-mode 5 GHz AP.
-         */
+                scalar_ssid_only_wpa2)) {
         mfp = MFP_CAPABLE;
     }
     bool plain_wpa_psk =
@@ -5534,7 +5580,8 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
 
     if (((bssid == NULL) || bssid_hint_ssid_only_wpa2) &&
         ((channel == CYW43_CHANNEL_NONE) || (channel > 0U)) &&
-        (ap6256_join_channel_is_5g(channel) == 0U) &&
+        ((ap6256_join_channel_is_5g(channel) == 0U) ||
+         channel_hint_ssid_only_wpa2) &&
         ((auth_type == CYW43_AUTH_WPA2_AES_PSK) ||
          (auth_type == CYW43_AUTH_WPA2_MIXED_PSK) ||
          (auth_type == CYW43_AUTH_WPA_TKIP_PSK))) {
@@ -5544,7 +5591,8 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
          * SSID joins too: it avoids the reset-prone directed/transition
          * machinery while still allowing a brcmfmac-style primary-channel hint.
          */
-        if (transition_ssid_only_wpa2 || bssid_hint_ssid_only_wpa2) {
+        if (scalar_ssid_only_wpa2 &&
+            (AP6256_CYW43_5G_SKIP_BROAD_WPA2_AUTH == 0U)) {
             /*
              * brcmfmac first advertises the broad WPA2 auth family, then
              * narrows key management to PSK after MFP/RSN policy is applied.
@@ -5583,6 +5631,24 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
         if ((ret != 0) && !ap6256_join_no_response_ok(ret)) {
             return ret;
         }
+        if (scalar_ssid_only_wpa2) {
+            /*
+             * Keep the conservative AP6256 path aligned with the proven
+             * scalar security baseline: leave WME enabled for transition BSS
+             * joins instead of deriving wme_bss_disable from scanned RSN
+             * capabilities. The RSN data is still captured for diagnostics,
+             * but the dynamic WME override did not improve HIL behavior and
+             * adds another 5 GHz-only divergence from the stable 2.4 GHz
+             * scalar path.
+             */
+            ret = cyw43_write_iovar_u32(self,
+                                        "wme_bss_disable",
+                                        0U,
+                                        WWD_STA_INTERFACE);
+            if ((ret != 0) && !ap6256_join_no_response_ok(ret)) {
+                return ret;
+            }
+        }
         /*
          * brcmfmac enables firmware supplicant with the STA-scoped sup_wpa
          * iovar before loading the PSK. The previous bsscfg:sup_wpa form could
@@ -5593,13 +5659,15 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
         if ((ret != 0) && !ap6256_join_no_response_ok(ret)) {
             return ret;
         }
-        ret = cyw43_write_iovar_u32(self, "sup_wpa2_eapver", (uint32_t)-1, WWD_STA_INTERFACE);
-        if ((ret != 0) && !ap6256_join_no_response_ok(ret)) {
-            return ret;
-        }
-        ret = cyw43_write_iovar_u32(self, "sup_wpa_tmo", CYW_EAPOL_KEY_TIMEOUT, WWD_STA_INTERFACE);
-        if ((ret != 0) && !ap6256_join_no_response_ok(ret)) {
-            return ret;
+        if (ap6256_join_should_program_sup_wpa_tuning() != 0U) {
+            ret = cyw43_write_iovar_u32(self, "sup_wpa2_eapver", (uint32_t)-1, WWD_STA_INTERFACE);
+            if ((ret != 0) && !ap6256_join_no_response_ok(ret)) {
+                return ret;
+            }
+            ret = cyw43_write_iovar_u32(self, "sup_wpa_tmo", CYW_EAPOL_KEY_TIMEOUT, WWD_STA_INTERFACE);
+            if ((ret != 0) && !ap6256_join_no_response_ok(ret)) {
+                return ret;
+            }
         }
 
         size_t pmk_len = ap6256_fill_wsec_pmk(buf,
@@ -5669,7 +5737,9 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
             }
         }
 
-        if (channel != CYW43_CHANNEL_NONE) {
+        if ((channel != CYW43_CHANNEL_NONE) &&
+            ((ap6256_join_channel_is_5g(channel) == 0U) ||
+             (AP6256_CYW43_5G_JOIN_SET_CHANNEL_STARTER != 0U))) {
             ret = cyw43_set_ioctl_u32(self,
                                       WLC_SET_CHANNEL,
                                       ap6256_primary_channel_from_join_channel(channel),
@@ -5679,8 +5749,17 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
             }
         }
 
-        if (transition_ssid_only_wpa2 || bssid_hint_ssid_only_wpa2) {
-            ret = ap6256_program_wpa2_psk_assoc_ie(self, wpa_auth, mfp);
+        if (scalar_ssid_only_wpa2) {
+            /*
+             * Keep both the first 5 GHz attempt and the bounded primary-channel
+             * retry on the same firmware-built association-IE shape. The 5 GHz
+             * default now clears any stale host assoc IE and lets firmware build
+             * the final RSN element so the retry isolates only the primary-
+             * channel starter itself.
+             */
+            ret = ap6256_program_wpa2_psk_assoc_ie(self,
+                                                   wpa_auth,
+                                                   mfp);
             if (ret != 0) {
                 return ret;
             }

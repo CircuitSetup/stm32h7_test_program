@@ -294,10 +294,15 @@ void ap6256_cyw43_port_record_join_event(uint32_t event_type,
                                          uint32_t status,
                                          uint32_t reason,
                                          uint32_t flags);
+void ap6256_cyw43_port_reset_join_event_window(void);
 uint32_t ap6256_cyw43_port_last_async_event_type(void);
 uint32_t ap6256_cyw43_port_last_async_event_status(void);
 uint32_t ap6256_cyw43_port_last_async_event_reason(void);
 uint32_t ap6256_cyw43_port_last_async_event_flags(void);
+uint32_t ap6256_cyw43_port_last_join_event_type(void);
+uint32_t ap6256_cyw43_port_last_join_event_status(void);
+uint32_t ap6256_cyw43_port_last_join_event_reason(void);
+uint32_t ap6256_cyw43_port_last_join_event_flags(void);
 uint32_t ap6256_cyw43_port_async_event_count(void);
 uint32_t ap6256_cyw43_port_join_event_count(void);
 void ap6256_cyw43_port_record_ioctl(uint32_t kind,
@@ -383,9 +388,12 @@ void ap6256_cyw43_port_record_assoc_target(const uint8_t bssid[6],
                                            uint16_t channel,
                                            uint8_t selected_5g,
                                            uint16_t chanspec,
+                                           uint16_t rsn_cap,
                                            uint32_t auth_type,
                                            uint8_t candidate_index,
                                            uint8_t candidate_count);
+uint8_t ap6256_cyw43_port_assoc_target_is_5g(void);
+uint16_t ap6256_cyw43_port_assoc_target_rsn_cap(void);
 void ap6256_cyw43_port_record_rx_frame(uint8_t rx_class,
                                        uint8_t channel,
                                        uint16_t sdpcm_len,
