@@ -255,10 +255,14 @@ static void cyw43_xxd(size_t len, const uint8_t *buf) {
 #define AP6256_BRCMF_JOIN_SCAN_LEN             20U
 #define AP6256_BRCMF_EXT_JOIN_ASSOC_OFFSET     (AP6256_BRCMF_SSID_LEN + AP6256_BRCMF_JOIN_SCAN_LEN)
 #define AP6256_BRCMF_ASSOC_FIXED_LEN           12U
+#define AP6256_BRCMF_JOIN_ONE_CHAN_LEN         (AP6256_BRCMF_SSID_LEN + AP6256_BRCMF_ASSOC_FIXED_LEN + 2U)
 #define AP6256_BRCMF_EXT_JOIN_ONE_CHAN_LEN     (AP6256_BRCMF_EXT_JOIN_ASSOC_OFFSET + AP6256_BRCMF_ASSOC_FIXED_LEN + 2U)
 #define AP6256_BRCMF_SCAN_JOIN_ACTIVE_MS       320U
 #define AP6256_BRCMF_SCAN_JOIN_PASSIVE_MS      400U
 #define AP6256_BRCMF_SCAN_JOIN_PROBE_MS        20U
+
+typedef char ap6256_brcmf_join_one_chan_len_must_be_50[
+    (AP6256_BRCMF_JOIN_ONE_CHAN_LEN == 50U) ? 1 : -1];
 
 static uint16_t ap6256_join_chanspec(uint32_t channel)
 {
@@ -339,9 +343,9 @@ static size_t ap6256_build_brcmf_join_params(uint8_t *buf,
                                              const uint8_t *bssid,
                                              uint32_t channel)
 {
-    const size_t ssid_struct_len = 4U + 32U;
-    const size_t assoc_fixed_len = 12U;
-    const size_t assoc_one_chanspec_len = 16U;
+    const size_t ssid_struct_len = AP6256_BRCMF_SSID_LEN;
+    const size_t assoc_fixed_len = AP6256_BRCMF_ASSOC_FIXED_LEN;
+    const size_t assoc_one_chanspec_len = AP6256_BRCMF_ASSOC_FIXED_LEN + 2U;
     size_t payload_len = ssid_struct_len;
 
     if ((buf == NULL) || (ssid == NULL) || (ssid_len > 32U) ||
@@ -397,7 +401,14 @@ static size_t __attribute__((unused)) ap6256_build_brcmf_ext_join_params(uint8_t
      * scan/control path has been recovered or reopened: the dongle can no
      * longer rely on a previous escan cache to find the target BSS.
      */
-    cyw43_put_le32(buf + AP6256_BRCMF_SSID_LEN, 0xFFFFFFFFUL); /* scan_type = -1/default */
+    /*
+     * brcmf_join_scan_params_le is laid out as a one-byte scan_type followed
+     * by three bytes of natural padding before the 32-bit dwell fields. Match
+     * brcmfmac's kzalloc + scan_type assignment: only byte 0 is 0xff and the
+     * padding stays zero. Older ext_join HIL attempts used 0xffffffff here,
+     * which put 0xff into the padding bytes and made the payload noncanonical.
+     */
+    buf[AP6256_BRCMF_SSID_LEN] = 0xFFU; /* scan_type = -1/default */
     if (channel != CYW43_CHANNEL_NONE) {
         nprobes = AP6256_BRCMF_SCAN_JOIN_ACTIVE_MS / AP6256_BRCMF_SCAN_JOIN_PROBE_MS;
         active_time = AP6256_BRCMF_SCAN_JOIN_ACTIVE_MS;
@@ -4854,13 +4865,11 @@ static void cyw43_ap6256_build_sta_event_mask(uint8_t *mask, size_t mask_len) {
     cyw43_ap6256_event_mask_set(mask, CYW43_EV_LINK);
     cyw43_ap6256_event_mask_set(mask, CYW43_EV_PRUNE);
     cyw43_ap6256_event_mask_set(mask, CYW43_EV_PSK_SUP);
-    cyw43_ap6256_event_mask_set(mask, CYW43_EV_BCM43456_PSK_SUP_ALT);
     cyw43_ap6256_event_mask_set(mask, CYW43_EV_ICV_ERROR);
     cyw43_ap6256_event_mask_set(mask, CYW43_EV_ESCAN_RESULT);
     cyw43_ap6256_event_mask_set(mask, CYW43_EV_CSA_COMPLETE_IND);
     cyw43_ap6256_event_mask_set(mask, CYW43_EV_ASSOC_REQ_IE);
     cyw43_ap6256_event_mask_set(mask, CYW43_EV_ASSOC_RESP_IE);
-    cyw43_ap6256_event_mask_set(mask, CYW43_EV_BCM43456_ASSOC_PROGRESS);
 }
 
 static int cyw43_ap6256_program_sta_event_mask(cyw43_int_t *self) {
@@ -5767,6 +5776,28 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
 
         cyw43_put_le32(self->last_ssid_joined, ssid_len);
         memcpy(self->last_ssid_joined + 4, ssid, ssid_len);
+        if ((bssid == NULL) &&
+            (ap6256_join_channel_is_5g(channel) != 0U) &&
+            (AP6256_CYW43_5G_BROADCAST_EXT_JOIN != 0U)) {
+            size_t ext_join_len = ap6256_build_brcmf_ext_join_params(buf,
+                                                                     sizeof(buf),
+                                                                     ssid_len,
+                                                                     ssid,
+                                                                     NULL,
+                                                                     channel);
+            if (ext_join_len != 0U) {
+                /*
+                 * brcmfmac tries the channel-scoped "join" iovar before
+                 * falling back to WLC_SET_SSID. This must live in the scalar
+                 * WPA2 path too; otherwise the 5 GHz WPA2 baseline silently
+                 * skips the very FullMAC path we are trying to validate.
+                 */
+                ret = cyw43_write_iovar_n(self, "join", ext_join_len, buf, WWD_STA_INTERFACE);
+                if (ret == 0) {
+                    return 0;
+                }
+            }
+        }
         return cyw43_do_ioctl(self, SDPCM_SET, WLC_SET_SSID, 36, self->last_ssid_joined, WWD_STA_INTERFACE);
     }
 

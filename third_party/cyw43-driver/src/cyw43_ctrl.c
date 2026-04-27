@@ -322,12 +322,14 @@ static const char *const cyw43_async_event_name_table[125] = {
     [CYW43_EV_DISASSOC_IND] = "DISASSOC_IND",
     [CYW43_EV_LINK] = "LINK",
     [CYW43_EV_PSK_SUP] = "PSK_SUP",
+    [CYW43_EV_PRE_ASSOC_IND] = "PRE_ASSOC_IND",
+    [CYW43_EV_PRE_REASSOC_IND] = "PRE_REASSOC_IND",
     [CYW43_EV_ESCAN_RESULT] = "ESCAN_RESULT",
-    [CYW43_EV_BCM43456_PSK_SUP_ALT] = "BCM43456_PSK_SUP_ALT",
+    [CYW43_EV_WAKE_EVENT] = "WAKE_EVENT",
     [CYW43_EV_CSA_COMPLETE_IND] = "CSA_COMPLETE_IND",
     [CYW43_EV_ASSOC_REQ_IE] = "ASSOC_REQ_IE",
     [CYW43_EV_ASSOC_RESP_IE] = "ASSOC_RESP_IE",
-    [CYW43_EV_BCM43456_ASSOC_PROGRESS] = "BCM43456_ASSOC_PROGRESS",
+    [CYW43_EV_CCA_CHAN_QUAL] = "CCA_CHAN_QUAL",
 };
 
 static void cyw43_dump_async_event(const cyw43_async_event_t *ev) {
@@ -364,8 +366,8 @@ void cyw43_cb_process_async_event(void *cb_data, const cyw43_async_event_t *ev) 
     case CYW43_EV_LINK:
     case CYW43_EV_PRUNE:
     case CYW43_EV_PSK_SUP:
-    case CYW43_EV_BCM43456_PSK_SUP_ALT:
-    case CYW43_EV_BCM43456_ASSOC_PROGRESS:
+    case CYW43_EV_PRE_ASSOC_IND:
+    case CYW43_EV_PRE_REASSOC_IND:
         ap6256_cyw43_port_record_join_event(ev->event_type, ev->status, ev->reason, ev->flags);
         break;
     default:
@@ -464,20 +466,6 @@ void cyw43_cb_process_async_event(void *cb_data, const cyw43_async_event_t *ev) 
         } else {
             self->wifi_join_state = WIFI_JOIN_STATE_FAIL;
         }
-    } else if (ev->event_type == CYW43_EV_BCM43456_ASSOC_PROGRESS) {
-        if (ev->status == 0) {
-            /*
-             * Event 124 is progress only. Treating it as AUTH/LINK completion
-             * makes the MCU path paper over a half-finished association on
-             * 5 GHz. Keep the session active, but let AUTH/ASSOC/LINK/PSK
-             * events prove actual usable link state.
-             */
-            self->wifi_join_state =
-                (self->wifi_join_state & ~WIFI_JOIN_STATE_KIND_MASK) |
-                WIFI_JOIN_STATE_ACTIVE;
-        } else {
-            self->wifi_join_state = WIFI_JOIN_STATE_FAIL;
-        }
     } else if (ev->event_type == CYW43_EV_DEAUTH || ev->event_type == CYW43_EV_DEAUTH_IND) {
         if ((ev->interface == CYW43_ITF_STA) ||
             ((self->wifi_join_state & (WIFI_JOIN_STATE_AUTH | WIFI_JOIN_STATE_LINK | WIFI_JOIN_STATE_KEYED)) != 0U)) {
@@ -508,8 +496,7 @@ void cyw43_cb_process_async_event(void *cb_data, const cyw43_async_event_t *ev) 
                 cyw43_cb_tcpip_set_link_down(self, ev->interface);
             }
         }
-    } else if ((ev->event_type == CYW43_EV_PSK_SUP) ||
-               (ev->event_type == CYW43_EV_BCM43456_PSK_SUP_ALT)) {
+    } else if (ev->event_type == CYW43_EV_PSK_SUP) {
         if (ev->status == 6) { // WLC_SUP_KEYED
             if ((self->wifi_join_state & WIFI_JOIN_STATE_KIND_MASK) == WIFI_JOIN_STATE_BADAUTH) {
                 self->wifi_join_state = (self->wifi_join_state & ~WIFI_JOIN_STATE_KIND_MASK) | WIFI_JOIN_STATE_ACTIVE;
