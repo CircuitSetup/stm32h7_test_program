@@ -2,9 +2,13 @@
 /.vscode
 /include/generated/
 /src/generated/
-scripts/hil_rtt_command.py
-scripts/test_ap6256_join_payload.py
-/scripts/__pycache__
-/scripts
 /docs
 /artifacts
+/scripts/__pycache__
+/scripts/*.py
+!/scripts/generate_ap6256_assets.py
+!/scripts/generate_ap6256_bt_gatt.py
+!/scripts/prepare_freertos_sources.py
+!/scripts/prepare_radio_sources.py
+!/scripts/prepare_lwip_port.py
+!/scripts/post_jlink_run.py
