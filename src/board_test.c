@@ -788,6 +788,8 @@ void board_test_stress_eth(uint32_t count)
 void board_test_stress_wifi(uint32_t count)
 {
     uint32_t i;
+    uint32_t pass_count = 0U;
+    uint32_t fail_count = 0U;
 
     if (count == 0U) {
         test_uart_write_str("stress wifi requires a positive iteration count.\r\n");
@@ -815,9 +817,19 @@ void board_test_stress_wifi(uint32_t count)
                                    pass,
                                    pass ? "Wi-Fi association and DHCP lease passed."
                                         : detail);
+        if (pass) {
+            ++pass_count;
+        } else {
+            ++fail_count;
+        }
         board_test_stress_log_iteration("wifi", i + 1U, count, pass,
                                         pass ? "qualified" : detail);
     }
+
+    test_uart_printf("STRESS WIFI SUMMARY: pass=%lu fail=%lu total=%lu\r\n",
+                     (unsigned long)pass_count,
+                     (unsigned long)fail_count,
+                     (unsigned long)count);
 }
 
 void board_test_stress_bt(uint32_t count)

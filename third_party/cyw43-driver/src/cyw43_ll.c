@@ -357,15 +357,26 @@ static size_t ap6256_build_brcmf_join_params(uint8_t *buf,
     cyw43_put_le32(buf, ssid_len);
     memcpy(buf + 4U, ssid, ssid_len);
 
+    if ((bssid != NULL) || (channel != CYW43_CHANNEL_NONE)) {
+        /*
+         * brcmfmac includes assoc params when cfg80211 supplied a channel even
+         * without an exact BSSID: bssid is broadcast, chanspec_num is one.
+         * That is safer for AP6256 than directed-BSSID joins, but avoids the
+         * unconstrained 36-byte SSID-only command that never reaches AUTH on
+         * visible 5 GHz-only doorbelkin BSSIDs.
+         */
+        memset(buf + ssid_struct_len, 0xFF, 6U);
+        payload_len += assoc_fixed_len;
+    }
+
     if (bssid != NULL) {
         memcpy(buf + ssid_struct_len, bssid, 6U);
-        payload_len += assoc_fixed_len;
+    }
 
-        if (channel != CYW43_CHANNEL_NONE) {
-            cyw43_put_le32(buf + ssid_struct_len + 8U, 1U);
-            cyw43_put_le16(buf + ssid_struct_len + 12U, ap6256_join_chanspec(channel));
-            payload_len = ssid_struct_len + assoc_one_chanspec_len;
-        }
+    if (channel != CYW43_CHANNEL_NONE) {
+        cyw43_put_le32(buf + ssid_struct_len + 8U, 1U);
+        cyw43_put_le16(buf + ssid_struct_len + 12U, ap6256_join_chanspec(channel));
+        payload_len = ssid_struct_len + assoc_one_chanspec_len;
     }
 
     return payload_len;
@@ -957,8 +968,7 @@ static int ap6256_program_wpa2_psk_assoc_ie(cyw43_int_t *self,
     }
 
     if ((AP6256_CYW43_5G_SKIP_ASSOC_WPAIE != 0U) &&
-        (ap6256_cyw43_port_assoc_target_is_5g() != 0U) &&
-        (mfp == MFP_NONE)) {
+        (ap6256_cyw43_port_assoc_target_is_5g() != 0U)) {
         /*
          * The stable AP6256 5 GHz path now uses conservative SSID-only joins.
          * Let firmware construct the final association RSN IE for that path
@@ -1006,6 +1016,26 @@ static uint8_t ap6256_join_should_program_sup_wpa_tuning(void)
         return 0U;
     }
     return 1U;
+}
+
+static uint32_t ap6256_assoc_target_mfp_for_wpa2(void) {
+    uint8_t target_mfp = ap6256_cyw43_port_assoc_target_mfp();
+    uint16_t target_rsn_cap = ap6256_cyw43_port_assoc_target_rsn_cap();
+
+    /*
+     * brcmfmac derives the association security shape from cfg80211's selected
+     * BSS. Keep the MCU path on WPA2-PSK/CCMP, but preserve the selected BSS's
+     * MFPC bit for transition-mode APs such as doorbelkin. Dropping MFPC made
+     * the 5 GHz WPA2 leg clear its association IE and then sit at SET_SSID
+     * with no AUTH/ASSOC/LINK evidence.
+     */
+    if ((target_mfp == MFP_REQUIRED) || ((target_rsn_cap & RSN_CAP_MFPR_MASK) != 0U)) {
+        return MFP_REQUIRED;
+    }
+    if ((target_mfp == MFP_CAPABLE) || ((target_rsn_cap & RSN_CAP_MFPC_MASK) != 0U)) {
+        return MFP_CAPABLE;
+    }
+    return MFP_NONE;
 }
 
 static bool ap6256_ioctl_is_association_trigger(uint32_t kind, uint32_t cmd) {
@@ -5580,6 +5610,9 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
         mfp = MFP_REQUIRED;
     } else if ((wpa_auth & CYW43_WPA3_AUTH_SAE_PSK) != 0U) {
         mfp = MFP_CAPABLE;
+    } else if ((auth_type == CYW43_AUTH_WPA2_AES_PSK) &&
+               (ap6256_cyw43_port_assoc_target_is_5g() != 0U)) {
+        mfp = ap6256_assoc_target_mfp_for_wpa2();
     } else if ((AP6256_CYW43_5G_WPA2_MFP_CAPABLE != 0U) &&
                (auth_type == CYW43_AUTH_WPA2_AES_PSK) &&
                ((ap6256_join_channel_is_5g(channel) != 0U) ||

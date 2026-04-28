@@ -59,7 +59,7 @@ static void print_help(void)
     test_uart_write_str("  ade_scan\r\n");
     test_uart_write_str("  run usb\r\n");
     test_uart_write_str("  eth_info\r\n");
-    test_uart_write_str("  wifi_info\r\n");
+    test_uart_write_str("  wifi_info [live]\r\n");
     test_uart_write_str("  wifi_nvram ap6256|generic\r\n");
     test_uart_write_str("  bt_info\r\n");
     test_uart_write_str("  radio_info\r\n");
@@ -206,6 +206,16 @@ static void handle_command(char *line)
     }
 
     if (str_ieq(cmd, "wifi_info")) {
+        if ((arg1 != NULL) && str_ieq(arg1, "live")) {
+            char detail[160];
+            ap6256_status_t st;
+
+            memset(detail, 0, sizeof(detail));
+            st = ap6256_wifi_runtime_refresh_live_info(detail, sizeof(detail));
+            test_uart_printf("Wi-Fi live info refresh: %s (%s)\r\n",
+                             ap6256_status_to_string(st),
+                             (detail[0] != '\0') ? detail : "no detail");
+        }
         test_wifi_print_info();
         return;
     }

@@ -162,6 +162,7 @@ static volatile uint8_t s_cyw43_assoc_target_5g;
 static volatile uint8_t s_cyw43_assoc_target_auth_code;
 static volatile uint8_t s_cyw43_assoc_candidate_index;
 static volatile uint8_t s_cyw43_assoc_candidate_count;
+static volatile uint8_t s_cyw43_assoc_target_mfp;
 static volatile uint16_t s_cyw43_assoc_target_chanspec;
 static volatile uint16_t s_cyw43_assoc_target_rsn_cap;
 static volatile uint8_t s_cyw43_last_rx_class;
@@ -1986,6 +1987,7 @@ void ap6256_cyw43_port_record_assoc_target(const uint8_t bssid[6],
                                            uint8_t selected_5g,
                                            uint16_t chanspec,
                                            uint16_t rsn_cap,
+                                           uint8_t mfp,
                                            uint32_t auth_type,
                                            uint8_t candidate_index,
                                            uint8_t candidate_count)
@@ -2003,6 +2005,7 @@ void ap6256_cyw43_port_record_assoc_target(const uint8_t bssid[6],
     s_cyw43_assoc_target_5g = (selected_5g != 0U) ? 1U : 0U;
     s_cyw43_assoc_target_chanspec = chanspec;
     s_cyw43_assoc_target_rsn_cap = rsn_cap;
+    s_cyw43_assoc_target_mfp = mfp;
     s_cyw43_assoc_candidate_index = candidate_index;
     s_cyw43_assoc_candidate_count = candidate_count;
     /*
@@ -2021,6 +2024,11 @@ uint8_t ap6256_cyw43_port_assoc_target_is_5g(void)
 uint16_t ap6256_cyw43_port_assoc_target_rsn_cap(void)
 {
     return s_cyw43_assoc_target_rsn_cap;
+}
+
+uint8_t ap6256_cyw43_port_assoc_target_mfp(void)
+{
+    return s_cyw43_assoc_target_mfp;
 }
 
 void ap6256_cyw43_port_record_rx_frame(uint8_t rx_class,

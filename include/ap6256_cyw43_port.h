@@ -389,11 +389,13 @@ void ap6256_cyw43_port_record_assoc_target(const uint8_t bssid[6],
                                            uint8_t selected_5g,
                                            uint16_t chanspec,
                                            uint16_t rsn_cap,
+                                           uint8_t mfp,
                                            uint32_t auth_type,
                                            uint8_t candidate_index,
                                            uint8_t candidate_count);
 uint8_t ap6256_cyw43_port_assoc_target_is_5g(void);
 uint16_t ap6256_cyw43_port_assoc_target_rsn_cap(void);
+uint8_t ap6256_cyw43_port_assoc_target_mfp(void);
 void ap6256_cyw43_port_record_rx_frame(uint8_t rx_class,
                                        uint8_t channel,
                                        uint16_t sdpcm_len,

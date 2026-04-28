@@ -3270,6 +3270,102 @@ static uint8_t ap6256_wifi_runtime_capture_phy_diag(uint16_t selected_channel,
     return assoc_wifi5;
 }
 
+static void ap6256_wifi_runtime_print_chanspec_summary(void)
+{
+    uint8_t buf[512];
+    uint32_t count;
+    uint32_t count_2g = 0U;
+    uint32_t count_5g = 0U;
+    uint8_t first_5g_channel = 0U;
+    uint8_t last_5g_channel = 0U;
+    uint16_t first_5g_chanspec = 0U;
+    uint16_t last_5g_chanspec = 0U;
+    int rc;
+
+    memset(buf, 0, sizeof(buf));
+    rc = ap6256_wifi_runtime_get_iovar_raw("chanspecs", buf, sizeof(buf));
+    if (rc != 0) {
+        test_uart_printf("[ INFO ] wifi.live caps: chanspecs rc=%d count=0 5g=0\r\n", rc);
+        return;
+    }
+
+    count = ap6256_wifi_runtime_get_le32(buf);
+    if (count > ((sizeof(buf) - 4U) / 4U)) {
+        count = (sizeof(buf) - 4U) / 4U;
+    }
+
+    for (uint32_t i = 0U; i < count; ++i) {
+        uint16_t candidate = (uint16_t)ap6256_wifi_runtime_get_le32(&buf[4U + (i * 4U)]);
+        uint8_t primary = ap6256_wifi_runtime_primary_channel_from_chanspec(candidate);
+
+        if (primary == 0U) {
+            continue;
+        }
+        if (ap6256_wifi_runtime_channel_is_5g(primary) != 0U) {
+            ++count_5g;
+            if (first_5g_channel == 0U) {
+                first_5g_channel = primary;
+                first_5g_chanspec = candidate;
+            }
+            last_5g_channel = primary;
+            last_5g_chanspec = candidate;
+        } else {
+            ++count_2g;
+        }
+    }
+
+    test_uart_printf("[ INFO ] wifi.live caps: chanspecs rc=0 count=%lu 2g=%lu 5g=%lu first5=ch%u/cs%04X last5=ch%u/cs%04X\r\n",
+                     (unsigned long)count,
+                     (unsigned long)count_2g,
+                     (unsigned long)count_5g,
+                     first_5g_channel,
+                     first_5g_chanspec,
+                     last_5g_channel,
+                     last_5g_chanspec);
+}
+
+ap6256_status_t ap6256_wifi_runtime_refresh_live_info(char *detail, size_t detail_len)
+{
+    ap6256_status_t status = AP6256_STATUS_OK;
+    uint8_t assoc_channel = 0U;
+
+    if ((detail == NULL) || (detail_len == 0U)) {
+        return AP6256_STATUS_BAD_PARAM;
+    }
+    detail[0] = '\0';
+
+    if (!network_manager_acquire(NETWORK_OWNER_WIFI, 30000U)) {
+        (void)snprintf(detail, detail_len, "Timed out waiting for Wi-Fi radio ownership.");
+        return AP6256_STATUS_TIMEOUT;
+    }
+
+    test_uart_write_str("[ INFO ] wifi.live stage: acquired wifi owner\r\n");
+    ap6256_wifi_runtime_set_poll_paused(1U);
+    if (!ap6256_wifi_runtime_prepare_scan_sdio_policy(detail, detail_len)) {
+        status = AP6256_STATUS_IO_ERROR;
+        goto out;
+    }
+    if (!ap6256_wifi_runtime_ensure_ready(detail, detail_len)) {
+        status = AP6256_STATUS_IO_ERROR;
+        goto out;
+    }
+
+    ap6256_wifi_runtime_poll_burst(16U, 4U);
+    (void)ap6256_wifi_runtime_capture_phy_diag(0U, &assoc_channel);
+    ap6256_wifi_runtime_print_chanspec_summary();
+    (void)snprintf(detail,
+                   detail_len,
+                   "Live Wi-Fi firmware/regulatory diagnostics refreshed before association.");
+    ap6256_connectivity_set_wifi_note(detail);
+
+out:
+    ap6256_wifi_runtime_suspend();
+    ap6256_wifi_runtime_set_poll_paused(0U);
+    ap6256_wifi_runtime_release_owner_with_breadcrumb(AP6256_CYW43_BREADCRUMB_RELEASE,
+                                                      status);
+    return status;
+}
+
 static ap6256_status_t ap6256_wifi_runtime_run_common(const char *ssid,
                                                       const char *password,
                                                       uint8_t secure,
@@ -3430,6 +3526,7 @@ static ap6256_status_t ap6256_wifi_runtime_run_common(const char *ssid,
                                           ap6256_wifi_runtime_channel_is_5g(channel),
                                           assoc_target_chanspec,
                                           rsn_cap,
+                                          mfp,
                                           selected_auth,
                                           s_wifi_runtime_join_candidate_index,
                                           s_wifi_runtime_join_candidate_count);
