@@ -597,7 +597,7 @@ static size_t __attribute__((unused)) ap6256_build_brcmf_ext_join_params(uint8_t
 #endif
 
 #ifndef AP6256_CYW43_5G_JOIN_SET_CHANNEL_STARTER
-#define AP6256_CYW43_5G_JOIN_SET_CHANNEL_STARTER     (1U)
+#define AP6256_CYW43_5G_JOIN_SET_CHANNEL_STARTER     (0U)
 #endif
 
 #ifndef AP6256_CYW43_ABORT_SCAN_BEFORE_JOIN
@@ -622,6 +622,10 @@ static size_t __attribute__((unused)) ap6256_build_brcmf_ext_join_params(uint8_t
 
 #ifndef AP6256_CYW43_5G_SKIP_SUP_WPA_TUNING
 #define AP6256_CYW43_5G_SKIP_SUP_WPA_TUNING          (1U)
+#endif
+
+#ifndef AP6256_CYW43_5G_SCALAR_JOIN_PREF
+#define AP6256_CYW43_5G_SCALAR_JOIN_PREF             (1U)
 #endif
 
 #ifndef AP6256_CYW43_ENABLE_BSSID_HINT
@@ -5755,6 +5759,30 @@ int cyw43_ll_wifi_join(cyw43_ll_t *self_in, size_t ssid_len, const uint8_t *ssid
                                       WWD_STA_INTERFACE);
             if ((ret != 0) && !ap6256_join_no_response_ok(ret)) {
                 return ret;
+            }
+        }
+
+        if ((bssid == NULL) &&
+            (ap6256_join_channel_is_5g(channel) != 0U) &&
+            (AP6256_CYW43_5G_SCALAR_JOIN_PREF != 0U)) {
+            size_t join_pref_len = ap6256_build_join_pref_5g(buf, sizeof(buf));
+
+            if (join_pref_len != 0U) {
+                /*
+                 * Keep the final WLC_SET_SSID payload SSID-only, but mirror
+                 * brcmfmac's band-preference hint so firmware does not have
+                 * to infer the 5 GHz target solely from stale escan cache.
+                 * This is intentionally not WLC_SET_BAND or WLC_SET_CHANNEL:
+                 * both were reset-prone/default-hostile in prior HIL runs.
+                 */
+                ret = cyw43_write_iovar_n(self,
+                                          "join_pref",
+                                          join_pref_len,
+                                          buf,
+                                          WWD_STA_INTERFACE);
+                if ((ret != 0) && !ap6256_join_no_response_ok(ret)) {
+                    return ret;
+                }
             }
         }
 

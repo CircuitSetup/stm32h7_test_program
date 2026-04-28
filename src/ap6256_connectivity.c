@@ -577,6 +577,16 @@ void ap6256_connectivity_set_wifi_poll_diag(uint8_t packet_pending,
     s_wifi_state.last_update_ms = HAL_GetTick();
 }
 
+void ap6256_connectivity_set_wifi_assoc_diag(const ap6256_wifi_assoc_diag_t *diag)
+{
+    if (diag == NULL) {
+        memset(&s_wifi_state.runtime_assoc_diag, 0, sizeof(s_wifi_state.runtime_assoc_diag));
+    } else {
+        s_wifi_state.runtime_assoc_diag = *diag;
+    }
+    s_wifi_state.last_update_ms = HAL_GetTick();
+}
+
 void ap6256_connectivity_set_bt_note(const char *text)
 {
     ap6256_connectivity_set_bt_error(text);
@@ -1037,6 +1047,56 @@ void ap6256_connectivity_print_wifi_info(void)
                      (unsigned long)ap6256_cyw43_port_last_async_event_status(),
                      (unsigned long)ap6256_cyw43_port_last_async_event_reason(),
                      (unsigned long)ap6256_cyw43_port_last_async_event_flags());
+    test_uart_printf("  Assoc diag: valid=%u class=%s status=%ld join=0x%08lX sel=%u sec=%u target=%02X:%02X:%02X:%02X:%02X:%02X/ch%u/cs%04X auth=0x%08lX\r\n",
+                     state->runtime_assoc_diag.valid,
+                     (state->runtime_assoc_diag.failure_class[0] != '\0') ?
+                         state->runtime_assoc_diag.failure_class : "none",
+                     (long)state->runtime_assoc_diag.link_status,
+                     (unsigned long)state->runtime_assoc_diag.join_state,
+                     state->runtime_assoc_diag.selected_5g,
+                     state->runtime_assoc_diag.secure,
+                     state->runtime_assoc_diag.target_bssid[0],
+                     state->runtime_assoc_diag.target_bssid[1],
+                     state->runtime_assoc_diag.target_bssid[2],
+                     state->runtime_assoc_diag.target_bssid[3],
+                     state->runtime_assoc_diag.target_bssid[4],
+                     state->runtime_assoc_diag.target_bssid[5],
+                     state->runtime_assoc_diag.target_channel,
+                     state->runtime_assoc_diag.target_chanspec,
+                     (unsigned long)state->runtime_assoc_diag.auth_type);
+    test_uart_printf("  Assoc state: assoc=%u/m%u %02X:%02X:%02X:%02X:%02X:%02X ev=%lu/%lu/%lu r=%lu f=0x%lX pje=%u ple=%u keyed=%u\r\n",
+                     state->runtime_assoc_diag.assoc_seen,
+                     state->runtime_assoc_diag.assoc_matches,
+                     state->runtime_assoc_diag.assoc_bssid[0],
+                     state->runtime_assoc_diag.assoc_bssid[1],
+                     state->runtime_assoc_diag.assoc_bssid[2],
+                     state->runtime_assoc_diag.assoc_bssid[3],
+                     state->runtime_assoc_diag.assoc_bssid[4],
+                     state->runtime_assoc_diag.assoc_bssid[5],
+                     (unsigned long)state->runtime_assoc_diag.join_event_count,
+                     (unsigned long)state->runtime_assoc_diag.join_event_type,
+                     (unsigned long)state->runtime_assoc_diag.join_event_status,
+                     (unsigned long)state->runtime_assoc_diag.join_event_reason,
+                     (unsigned long)state->runtime_assoc_diag.join_event_flags,
+                     state->runtime_assoc_diag.post_join_event_seen,
+                     state->runtime_assoc_diag.post_join_link_evidence,
+                     state->runtime_assoc_diag.keyed_seen);
+    test_uart_printf("  Assoc probe: bssid=%ld/%u cs=%ld/0x%04lX ctr=%ld/0x%08lX/%08lX/%08lX ai=%ld/0x%08lX/%08lX/%08lX rx=%s/%u/0x%08lX\r\n",
+                     (long)state->runtime_assoc_diag.get_bssid_rc,
+                     state->runtime_assoc_diag.get_bssid_valid,
+                     (long)state->runtime_assoc_diag.chanspec_rc,
+                     (unsigned long)state->runtime_assoc_diag.chanspec,
+                     (long)state->runtime_assoc_diag.counters_rc,
+                     (unsigned long)state->runtime_assoc_diag.counters_hash,
+                     (unsigned long)state->runtime_assoc_diag.counters_first,
+                     (unsigned long)state->runtime_assoc_diag.counters_second,
+                     (long)state->runtime_assoc_diag.assoc_info_rc,
+                     (unsigned long)state->runtime_assoc_diag.assoc_info_hash,
+                     (unsigned long)state->runtime_assoc_diag.assoc_info_first,
+                     (unsigned long)state->runtime_assoc_diag.assoc_info_second,
+                     ap6256_connectivity_rx_class_name(state->runtime_assoc_diag.last_rx_class),
+                     state->runtime_assoc_diag.last_rx_payload_len,
+                     (unsigned long)state->runtime_assoc_diag.last_rx_first_word);
     test_uart_printf("  TX ctl: valid=%u io=%lu/%lu if=%lu len=%lu id=%lu sdpcm=%lu xfer=%lu bs=%lu crc=0x%08lX first=%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X\r\n",
                      tx_diag.valid,
                      (unsigned long)tx_diag.kind,

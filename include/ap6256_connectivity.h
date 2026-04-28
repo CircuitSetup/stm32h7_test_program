@@ -15,6 +15,45 @@ typedef enum {
 } ap6256_wifi_security_t;
 
 typedef struct {
+    uint8_t valid;
+    char failure_class[32];
+    int32_t link_status;
+    uint32_t join_state;
+    uint8_t selected_5g;
+    uint8_t secure;
+    uint8_t assoc_seen;
+    uint8_t assoc_matches;
+    uint8_t post_join_event_seen;
+    uint8_t post_join_link_evidence;
+    uint8_t keyed_seen;
+    uint8_t target_bssid[6];
+    uint8_t assoc_bssid[6];
+    uint8_t target_channel;
+    uint16_t target_chanspec;
+    uint32_t auth_type;
+    uint32_t join_event_count;
+    uint32_t join_event_type;
+    uint32_t join_event_status;
+    uint32_t join_event_reason;
+    uint32_t join_event_flags;
+    int32_t get_bssid_rc;
+    uint8_t get_bssid_valid;
+    int32_t chanspec_rc;
+    uint32_t chanspec;
+    int32_t counters_rc;
+    uint32_t counters_hash;
+    uint32_t counters_first;
+    uint32_t counters_second;
+    int32_t assoc_info_rc;
+    uint32_t assoc_info_hash;
+    uint32_t assoc_info_first;
+    uint32_t assoc_info_second;
+    uint8_t last_rx_class;
+    uint16_t last_rx_payload_len;
+    uint32_t last_rx_first_word;
+} ap6256_wifi_assoc_diag_t;
+
+typedef struct {
     ap6256_status_t transport_status;
     ap6256_wifi_diag_t transport_diag;
     uint8_t transport_present;
@@ -128,6 +167,7 @@ typedef struct {
     uint8_t runtime_ioctl_recovery_attempted;
     uint8_t runtime_ioctl_forced_probe_attempted;
     uint8_t runtime_ioctl_resend_attempted;
+    ap6256_wifi_assoc_diag_t runtime_assoc_diag;
     char last_error[96];
     uint32_t last_update_ms;
 } ap6256_wifi_state_t;
@@ -289,6 +329,7 @@ void ap6256_connectivity_set_wifi_poll_diag(uint8_t packet_pending,
                                             uint8_t ioctl_recovery_attempted,
                                             uint8_t ioctl_forced_probe_attempted,
                                             uint8_t ioctl_resend_attempted);
+void ap6256_connectivity_set_wifi_assoc_diag(const ap6256_wifi_assoc_diag_t *diag);
 
 void ap6256_connectivity_set_bt_note(const char *text);
 void ap6256_connectivity_set_bt_runtime(uint8_t stack_ready,

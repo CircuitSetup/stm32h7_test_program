@@ -202,8 +202,8 @@ void test_uart_printf(const char *fmt, ...)
         return;
     }
 
-    if ((size_t)n > sizeof(buffer)) {
-        n = (int)sizeof(buffer);
+    if ((size_t)n >= sizeof(buffer)) {
+        n = (int)sizeof(buffer) - 1;
     }
 
     test_uart_write((const uint8_t *)buffer, (size_t)n);
